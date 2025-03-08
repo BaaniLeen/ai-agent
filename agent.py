@@ -2,6 +2,7 @@ import os
 from mistralai import Mistral
 import discord
 from datetime import datetime, timedelta
+import logging
 
 MISTRAL_MODEL = "mistral-large-latest"
 SYSTEM_PROMPT = """You are a compassionate life coach. Help users build habits by:
@@ -23,6 +24,9 @@ STREAK_MILESTONES = {
     21: "💫 21 days! You're well on your way to making this a lasting habit!",
     30: "🏆 30-day streak! What an amazing achievement!",
 }
+
+# Setup logging
+logger = logging.getLogger("discord")
 
 class MistralAgent:
     def __init__(self):
@@ -66,6 +70,7 @@ class MistralAgent:
 
     async def send_reminder(self, user_id, channel):
         """Send a reminder message to the user"""
+        logger.info(f"Sending reminder for user: {user_id} to channel: {channel}")
         habit_goal = self.user_data[user_id]["habit_goal"]
         reminder = REMINDER_MESSAGE.format(habit_goal=habit_goal)
         await channel.send(reminder)
