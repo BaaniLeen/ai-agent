@@ -39,12 +39,16 @@ async def on_ready():
     https://discordpy.readthedocs.io/en/latest/api.html#discord.on_ready
     """
     logger.info(f"{bot.user} has connected to Discord!")
+     # If the task is running due to a previous session, stop it first
+    if check_reminders.is_running():
+        check_reminders.cancel()
     check_reminders.start()
 
 
 @tasks.loop(minutes=5)  # Check every 5 minutes
 async def check_reminders():
     """Check if any users need reminders and send them."""
+    logger.info(f"Checking reminders, user_data: {agent.user_data}")
     for user_id in agent.user_data:
         if agent.should_send_reminder(user_id):
             try:
