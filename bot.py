@@ -7,6 +7,7 @@ from datetime import datetime
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 from agent import MistralAgent
+from database import Database
 
 PREFIX = "!"
 
@@ -45,7 +46,10 @@ async def on_ready():
 @tasks.loop(minutes=5)  # Check every 5 minutes
 async def check_reminders():
     """Check if any users need reminders and send them."""
-    for user_id in agent.user_data:
+    # Get all users from the database instead of using agent.user_data
+    all_users = agent.db.get_all_users()
+    for user_data in all_users:
+        user_id = user_data["_id"]
         if agent.should_send_reminder(user_id):
             try:
                 user = await bot.fetch_user(user_id)
@@ -104,11 +108,12 @@ async def ping(ctx, *, arg=None):
 async def streak(ctx):
     """Show the user's current streak and progress information."""
     user_id = ctx.author.id
-    if user_id not in agent.user_data or not agent.user_data[user_id]["onboarded"]:
+    user_data = agent.db.get_user_data(user_id)
+    
+    if not user_data or not user_data["onboarded"]:
         await ctx.send("You haven't set up your habit tracking yet! Send me a message to get started.")
         return
 
-    user_data = agent.user_data[user_id]
     response = (
         f"🎯 **Your Habit Goal**: {user_data['habit_goal']}\n\n"
         f"📊 **Current Streak**: {user_data['current_streak']} days\n"
@@ -123,14 +128,16 @@ async def streak(ctx):
 async def set_reminder(ctx, new_time: str):
     """Update the user's daily reminder time."""
     user_id = ctx.author.id
-    if user_id not in agent.user_data or not agent.user_data[user_id]["onboarded"]:
+    user_data = agent.db.get_user_data(user_id)
+    
+    if not user_data or not user_data["onboarded"]:
         await ctx.send("You haven't set up your habit tracking yet! Send me a message to get started.")
         return
 
     try:
         # Validate time format
         datetime.strptime(new_time, "%H:%M")
-        agent.user_data[user_id]["reminder_time"] = new_time
+        agent.db.update_user_data(user_id, {"reminder_time": new_time})
         await ctx.send(f"✅ Your daily reminder time has been updated to {new_time}!")
     except ValueError:
         await ctx.send("❌ Please use the format HH:MM (e.g., 09:00 or 14:30)")
@@ -140,11 +147,13 @@ async def set_reminder(ctx, new_time: str):
 async def progress(ctx, days: int = 7):
     """Show the user's progress log for the specified number of days."""
     user_id = ctx.author.id
-    if user_id not in agent.user_data or not agent.user_data[user_id]["onboarded"]:
+    user_data = agent.db.get_user_data(user_id)
+    
+    if not user_data or not user_data["onboarded"]:
         await ctx.send("You haven't set up your habit tracking yet! Send me a message to get started.")
         return
 
-    progress_log = agent.user_data[user_id]["progress_log"]
+    progress_log = user_data["progress_log"]
     if not progress_log:
         await ctx.send("No progress data available yet. Keep working on your habit!")
         return

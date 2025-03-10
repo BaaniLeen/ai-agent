@@ -3,6 +3,7 @@ from mistralai import Mistral
 import discord
 from datetime import datetime, timedelta
 import logging
+from database import Database
 
 MISTRAL_MODEL = "mistral-large-latest"
 SYSTEM_PROMPT = """You are a compassionate life coach. Help users build habits by:
@@ -32,46 +33,46 @@ class MistralAgent:
     def __init__(self):
         MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
         self.client = Mistral(api_key=MISTRAL_API_KEY)
-        
-        # Store all user data including conversation history and habit information
-        self.user_data = {}
+        self.db = Database()
 
     def update_streak(self, user_id, completed=True):
         """Update user's streak and check for milestone achievements"""
+        user_data = self.db.get_user_data(user_id)
+        
         if completed:
-            self.user_data[user_id]["current_streak"] += 1
-            self.user_data[user_id]["longest_streak"] = max(
-                self.user_data[user_id]["longest_streak"],
-                self.user_data[user_id]["current_streak"]
-            )
+            new_streak = user_data["current_streak"] + 1
+            longest_streak = max(user_data["longest_streak"], new_streak)
+            
+            self.db.update_user_data(user_id, {
+                "current_streak": new_streak,
+                "longest_streak": longest_streak
+            })
             
             # Check for streak milestones
-            streak = self.user_data[user_id]["current_streak"]
-            if streak in STREAK_MILESTONES:
-                return STREAK_MILESTONES[streak]
+            if new_streak in STREAK_MILESTONES:
+                return STREAK_MILESTONES[new_streak]
         else:
-            self.user_data[user_id]["current_streak"] = 0
+            self.db.update_user_data(user_id, {"current_streak": 0})
         return None
 
     def should_send_reminder(self, user_id):
         """Check if we should send a reminder to the user"""
-        if user_id not in self.user_data or not self.user_data[user_id]["onboarded"]:
+        user_data = self.db.get_user_data(user_id)
+        if not user_data or not user_data["onboarded"]:
             return False
             
-        last_check_in = datetime.strptime(self.user_data[user_id]["last_check_in"], "%Y-%m-%d")
-        reminder_time = datetime.strptime(self.user_data[user_id]["reminder_time"], "%H:%M").time()
+        last_check_in = datetime.strptime(user_data["last_check_in"], "%Y-%m-%d")
+        reminder_time = datetime.strptime(user_data["reminder_time"], "%H:%M").time()
         current_time = datetime.now()
         
-        # If it's past reminder time and user hasn't checked in today
-        if (current_time.time() > reminder_time and 
-            last_check_in.date() < current_time.date()):
-            return True
-        return False
+        return (current_time.time() > reminder_time and 
+                last_check_in.date() < current_time.date())
 
     async def send_reminder(self, user_id, channel):
         """Send a reminder message to the user"""
         logger.info(f"Sending reminder for user: {user_id} to channel: {channel}")
-        habit_goal = self.user_data[user_id]["habit_goal"]
+        user_data = self.db.get_user_data(user_id)
+        habit_goal = user_data["habit_goal"]
         reminder = REMINDER_MESSAGE.format(habit_goal=habit_goal)
         await channel.send(reminder)
 
@@ -79,59 +80,46 @@ class MistralAgent:
         user_id = message.author.id
         current_date = datetime.now().strftime("%Y-%m-%d")
         
-        # Initialize user data if first interaction
-        if user_id not in self.user_data:
-            self.user_data[user_id] = {
-                "onboarded": False,
-                "habit_goal": "",
-                "milestones": [],
-                "last_check_in": current_date,
-                "reminder_time": "09:00",  # Default reminder time
-                "current_streak": 0,
-                "longest_streak": 0,
-                "conversation_history": [],
-                "progress_log": {}  # Daily progress tracking
-            }
-            # Add first user message to history
-            self.user_data[user_id]["conversation_history"].append({
-                "role": "user", 
-                "content": message.content,
-                "date": current_date
-            })
-            # Return onboarding prompt
-            self.user_data[user_id]["conversation_history"].append({
-                "role": "assistant", 
+        # Get or create user data
+        user_data = self.db.get_user_data(user_id)
+        if not user_data:
+            user_data = self.db.create_user(user_id)
+            # For new users, send the onboarding prompt
+            self.db.update_conversation_history(user_id, {
+                "role": "assistant",
                 "content": ONBOARDING_PROMPT,
                 "date": current_date
             })
             return ONBOARDING_PROMPT
         
-        # Store current message in history
-        self.user_data[user_id]["conversation_history"].append({
-            "role": "user", 
+        # Add message to conversation history
+        message_entry = {
+            "role": "user",
             "content": message.content,
             "date": current_date
-        })
+        }
+        self.db.update_conversation_history(user_id, message_entry)
         
-        # Handle second message (onboarding response)
-        if not self.user_data[user_id]["onboarded"]:
+        # Handle onboarding
+        if not user_data["onboarded"]:
             # Extract reminder time from the message if provided
             message_lower = message.content.lower()
             if "am" in message_lower or "pm" in message_lower:
                 try:
-                    # Simple time extraction - could be made more robust
                     time_str = message_lower.split("at ")[-1].split(" ")[0]
                     reminder_time = datetime.strptime(time_str, "%H:%M").strftime("%H:%M")
-                    self.user_data[user_id]["reminder_time"] = reminder_time
+                    self.db.update_user_data(user_id, {"reminder_time": reminder_time})
                 except:
-                    pass  # Keep default if parsing fails
+                    pass
             
-            self.user_data[user_id]["habit_goal"] = message.content
-            self.user_data[user_id]["onboarded"] = True
+            # Update user data for onboarding
+            self.db.update_user_data(user_id, {
+                "habit_goal": message.content,
+                "onboarded": True
+            })
             
-            # Prepare messages for the model to set initial milestones
+            # Get milestones
             milestone_prompt = f"Based on the user's habit goal: '{message.content}', suggest 3 achievable milestones. Format as a list."
-            
             messages = [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": milestone_prompt}
@@ -143,43 +131,43 @@ class MistralAgent:
             )
             
             milestones = milestone_response.choices[0].message.content
-            self.user_data[user_id]["milestones"] = milestones
+            self.db.update_user_data(user_id, {"milestones": milestones})
             
-            response = f"Thank you for sharing! I've noted your habit goal:\n\n'{message.content}'\n\nHere are some milestones we can work toward:\n\n{milestones}\n\nI'll check in with you daily at {self.user_data[user_id]['reminder_time']} to track your progress. Remember, building habits takes time and self-compassion is key. How did you do with your habit today?"
+            response = f"Thank you for sharing! I've noted your habit goal:\n\n'{message.content}'\n\nHere are some milestones we can work toward:\n\n{milestones}\n\nI'll check in with you daily at {user_data['reminder_time']} to track your progress. Remember, building habits takes time and self-compassion is key. How did you do with your habit today?"
             
             # Store response in history
-            self.user_data[user_id]["conversation_history"].append({
-                "role": "assistant", 
+            self.db.update_conversation_history(user_id, {
+                "role": "assistant",
                 "content": response,
                 "date": current_date
             })
             
-            self.user_data[user_id]["last_check_in"] = current_date
+            self.db.update_user_data(user_id, {"last_check_in": current_date})
             return response
         
-        # For all subsequent conversations, include context
+        # For subsequent conversations
+        user_data = self.db.get_user_data(user_id)  # Get fresh data
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "system", "content": f"User's habit goal: {self.user_data[user_id]['habit_goal']}"},
-            {"role": "system", "content": f"Milestones: {self.user_data[user_id]['milestones']}"},
-            {"role": "system", "content": f"Current streak: {self.user_data[user_id]['current_streak']} days"},
-            {"role": "system", "content": f"Longest streak: {self.user_data[user_id]['longest_streak']} days"},
-            {"role": "system", "content": f"Last check-in: {self.user_data[user_id]['last_check_in']}"}
+            {"role": "system", "content": f"User's habit goal: {user_data['habit_goal']}"},
+            {"role": "system", "content": f"Milestones: {user_data['milestones']}"},
+            {"role": "system", "content": f"Current streak: {user_data['current_streak']} days"},
+            {"role": "system", "content": f"Longest streak: {user_data['longest_streak']} days"},
+            {"role": "system", "content": f"Last check-in: {user_data['last_check_in']}"}
         ]
         
-        # Add relevant conversation history (last 5 exchanges)
-        history = self.user_data[user_id]["conversation_history"][-10:]  # Last 10 messages
+        # Add conversation history
+        history = user_data["conversation_history"][-10:]
         for entry in history:
             if entry["role"] in ["user", "assistant"]:
                 messages.append({"role": entry["role"], "content": entry["content"]})
         
-        # Add current message
         messages.append({"role": "user", "content": message.content})
         
-        # Check if this is a new day for check-in
-        if self.user_data[user_id]["last_check_in"] != current_date:
+        # Check for new day
+        if user_data["last_check_in"] != current_date:
             messages.append({"role": "system", "content": "This is a new day. Ask about progress on their habit and provide encouragement. If they completed their habit, celebrate. If not, show understanding and help identify obstacles."})
-            self.user_data[user_id]["last_check_in"] = current_date
+            self.db.update_user_data(user_id, {"last_check_in": current_date})
         
         response = await self.client.chat.complete_async(
             model=MISTRAL_MODEL,
@@ -198,15 +186,15 @@ class MistralAgent:
         elif "no" in message_lower or "didn't" in message_lower or "failed" in message_lower:
             self.update_streak(user_id, completed=False)
         
-        # Store progress in log
-        self.user_data[user_id]["progress_log"][current_date] = {
+        # Update progress log
+        self.db.update_progress_log(user_id, current_date, {
             "message": message.content,
-            "completed": self.user_data[user_id]["current_streak"] > 0
-        }
+            "completed": self.db.get_user_data(user_id)["current_streak"] > 0
+        })
         
         # Store response in history
-        self.user_data[user_id]["conversation_history"].append({
-            "role": "assistant", 
+        self.db.update_conversation_history(user_id, {
+            "role": "assistant",
             "content": response_message,
             "date": current_date
         })
