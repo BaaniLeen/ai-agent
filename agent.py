@@ -75,16 +75,22 @@ class MistralAgent:
 
     def should_send_reminder(self, user_id):
         """Check if we should send a reminder to the user"""
+
+        logger.info(f"Should send reminder?")
         user_data = self.db.get_user_data(user_id)
         if not user_data or not user_data["onboarded"]:
             return False
-            
-        last_check_in = datetime.strptime(user_data["last_check_in"], "%Y-%m-%d")
-        reminder_time = datetime.strptime(user_data["reminder_time"], "%H:%M").time()
+        
+        last_check_in = datetime.strptime(self.user_data[user_id]["last_check_in"], "%Y-%m-%d")
+        reminder_time = datetime.strptime(self.user_data[user_id]["reminder_time"], "%H:%M").time()
         current_time = datetime.now()
         
-        return (current_time.time() > reminder_time and 
-                last_check_in.date() < current_time.date())
+        logger.info(f"last_check_in: {last_check_in}; reminder_time: {reminder_time}; current_time:{current_time}")
+        # If it's past reminder time and user hasn't checked in today
+        if (current_time.time() > reminder_time and 
+            last_check_in.date() < current_time.date()):
+            return True
+        return False
 
     async def send_reminder(self, user_id, channel):
         """Send a reminder message to the user"""
