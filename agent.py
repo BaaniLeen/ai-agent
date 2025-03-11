@@ -14,9 +14,27 @@ SYSTEM_PROMPT = """You are a compassionate life coach. Help users build habits b
 5. Helping users overcome obstacles by understanding their challenges
 Make sure your responses are less than 2000 words in length."""
 
-ONBOARDING_PROMPT = "Welcome! I'm your personal habit coach. What habit would you like to build? Please share your specific goals and what motivates you. Also, what time would you like me to check in with you daily? (e.g., '9:00 AM')"
+COMMANDS_HELP = """
+Here are all the available commands:
+• Just type a message normally to chat with me about your habit progress
+• `!streak` - Check your current streak and progress information
+• `!progress [days]` - View your progress log (default: last 7 days)
+• `!reminder HH:MM` - Change your daily reminder time (e.g., !reminder 09:00)
+• `!reset` - Reset your habit tracking and start fresh
+• `!help` - Show this help message
+"""
+
+# Update the ONBOARDING_PROMPT to include commands
+ONBOARDING_PROMPT = """Welcome! I'm your personal habit coach. What habit would you like to build? Please share your specific goals and what motivates you. Also, what time would you like me to check in with you daily? (e.g., '9:00 AM')
+
+""" + COMMANDS_HELP
 
 REMINDER_MESSAGE = "Hey! 👋 I noticed you haven't checked in about your habit today. How did it go with {habit_goal}? Remember, I'm here to support you, not judge. Even small progress is worth celebrating! 🌟"
+
+COMPLETION_ANALYZER_PROMPT = """You are a habit completion analyzer. 
+Your task is to determine if a user's message indicates they completed their habit or not.
+Respond with EXACTLY one word: either 'completed' or 'incomplete'.
+Consider context and nuance rather than just looking for specific words."""
 
 STREAK_MILESTONES = {
     3: "🌱 3-day streak! You're building momentum!",
@@ -90,7 +108,7 @@ class MistralAgent:
                 "content": ONBOARDING_PROMPT,
                 "date": current_date
             })
-            return ONBOARDING_PROMPT
+            return ONBOARDING_PROMPT  # Early return for new users
         
         # Add message to conversation history
         message_entry = {
@@ -100,7 +118,7 @@ class MistralAgent:
         }
         self.db.update_conversation_history(user_id, message_entry)
         
-        # Handle onboarding
+        # Handle onboarding response
         if not user_data["onboarded"]:
             # Extract reminder time from the message if provided
             message_lower = message.content.lower()
@@ -176,14 +194,25 @@ class MistralAgent:
         
         response_message = response.choices[0].message.content
         
-        # Update streak if the message indicates completion
-        # This is a simple check - you might want to make it more sophisticated
-        message_lower = message.content.lower()
-        if "yes" in message_lower or "done" in message_lower or "completed" in message_lower:
+        # Use LLM to determine if the message indicates completion
+        completion_check_messages = [
+            {"role": "system", "content": COMPLETION_ANALYZER_PROMPT},
+            {"role": "system", "content": f"The user's habit goal is: {user_data['habit_goal']}"},
+            {"role": "user", "content": message.content}
+        ]
+        
+        completion_response = await self.client.chat.complete_async(
+            model=MISTRAL_MODEL,
+            messages=completion_check_messages,
+        )
+        
+        completion_result = completion_response.choices[0].message.content.strip().lower()
+        
+        if completion_result == 'completed':
             streak_milestone = self.update_streak(user_id, completed=True)
             if streak_milestone:
                 response_message = f"{response_message}\n\n{streak_milestone}"
-        elif "no" in message_lower or "didn't" in message_lower or "failed" in message_lower:
+        elif completion_result == 'incomplete':
             self.update_streak(user_id, completed=False)
         
         # Update progress log
@@ -200,3 +229,24 @@ class MistralAgent:
         })
         
         return response_message
+
+    async def reset_user(self, user_id: int) -> str:
+        """Reset a user's data and restart their onboarding process."""
+        # First check if user exists in database
+        user_data = self.db.get_user_data(user_id)
+        if not user_data:
+            return "You don't have any habit tracking data to reset!"
+        
+        # Delete user's data from database
+        self.db.delete_user(user_id)
+        
+        # Create new user entry and get onboarding prompt
+        user_data = self.db.create_user(user_id)
+        self.db.update_conversation_history(user_id, {
+            "role": "assistant",
+            "content": ONBOARDING_PROMPT,
+            "date": datetime.now().strftime("%Y-%m-%d")
+        })
+        
+        return "✨ Your habit tracking data has been reset! Let's start fresh.\n\n" + ONBOARDING_PROMPT
+

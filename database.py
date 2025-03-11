@@ -59,4 +59,8 @@ class Database:
 
     def get_all_users(self):
         """Get all users for reminder checking"""
-        return self.users.find({}) 
+        return self.users.find({})
+
+    def delete_user(self, user_id: int) -> None:
+        """Delete a user's data from the database"""
+        self.users.delete_one({"_id": user_id}) 
