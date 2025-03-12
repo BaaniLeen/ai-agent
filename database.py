@@ -30,6 +30,7 @@ class Database:
             "limitations": "",
             "milestones": [],
             "last_check_in": current_date,
+            "last_reminder_sent": current_date,
             "reminder_time": "20:00",
             "timezone": None,  # Added timezone field
             "current_streak": 0,

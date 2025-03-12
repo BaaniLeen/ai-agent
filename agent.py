@@ -20,10 +20,12 @@ Make sure your responses are less than 2000 words in length."""
 COMMANDS_HELP = """
 Here are all the available commands:
 • Just type a message normally to chat with me about your workout progress
+• `!start_workout` - Start an interactive workout session
+• `!end_workout` - End your current workout session
 • `!streak` - Check your current workout streak and progress
 • `!progress [days]` - View your workout log (default: last 7 days)
 • `!reminder HH:MM` - Change your daily check-in time (e.g., !reminder 20:00)
-• `!start_workout` - Start an interactive workout session
+• `!timezone [zone]` - Set your timezone (defaults to PST, e.g., !timezone EST or !timezone America/New_York)
 • `!reset` - Reset your fitness tracking and start fresh
 • `!help` - Show this help message
 """
@@ -48,7 +50,7 @@ To get started, please tell me:
 
 """ + COMMANDS_HELP
 
-REMINDER_MESSAGE = """Hey fitness warrior! 💪 I noticed you haven't checked in about your workout today. How's your progress with {fitness_goal}? 
+REMINDER_MESSAGE = """Hey fitness warrior! 💪 I noticed you haven't checked in about your workout today. How's your progress with "{fitness_goal}"? 
 
 Remember:
 • Rest days are important too! If today is a rest day, just let me know
@@ -157,17 +159,26 @@ class MistralAgent:
             return False
         
         last_check_in = datetime.strptime(user_data["last_check_in"], "%Y-%m-%d")
+        last_reminder = datetime.strptime(user_data.get("last_reminder_sent", "2000-01-01"), "%Y-%m-%d")
         reminder_time = datetime.strptime(user_data["reminder_time"], "%H:%M").time()
         
         # Get current time in user's timezone
         user_tz = ZoneInfo(user_data["timezone"])
         current_time = datetime.now(user_tz)
+        current_date = current_time.date()
         
         logger.info(f"last_check_in: {last_check_in}; reminder_time: {reminder_time}; current_time:{current_time} (timezone: {user_data['timezone']})")
+        logger.info(f"last_reminder: {last_reminder.date()}; current_date: {current_date}")
         
-        # If it's past reminder time and user hasn't checked in today
+        # Only send reminder if:
+        # 1. It's past the reminder time
+        # 2. User hasn't checked in today
+        # 3. We haven't sent a reminder today
         if (current_time.time() > reminder_time and 
-            last_check_in.date() < current_time.date()):
+            last_check_in.date() < current_date and 
+            last_reminder.date() < current_date):
+            # Update last reminder date
+            self.db.update_user_data(user_id, {"last_reminder_sent": current_date.strftime("%Y-%m-%d")})
             return True
         return False
 

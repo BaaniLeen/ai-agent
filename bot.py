@@ -2,7 +2,8 @@ import os
 import discord
 import logging
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 from mistralai.models.sdkerror import SDKError
 
 from discord.ext import commands, tasks
@@ -108,6 +109,8 @@ Form cues: {exercise['form_cues']}
 Please complete this exercise and tell me what you actually did.
 Format: <sets completed>x<reps completed> @<weight used>
 Example: "3x10 @20lb" or "2x8 @15lb feeling tired"
+
+Need to stop early? Use `!end_workout` to end your session and save your progress.
 """)
                 
                 def check(m):
@@ -257,9 +260,66 @@ Example: "3x10 @20lb" or "2x8 @15lb feeling tired"
 
         await ctx.send(response)
 
-    @commands.command(name="reminder", help="Change your daily check-in time (format: HH:MM)", brief="Set check-in time")
-    async def set_reminder(self, ctx, new_time: str):
-        """Update the user's daily check-in time, using their Discord timezone."""
+    def _get_timezone_from_offset(self, offset_hours, current_time):
+        """Convert UTC offset to closest timezone name, considering DST."""
+        # Common timezone mappings (offset -> [possible_timezones])
+        offset_to_timezone = {
+            -12: ["Pacific/Wake"],
+            -11: ["Pacific/Pago_Pago"],
+            -10: ["Pacific/Honolulu", "America/Adak"],  # Adak observes DST
+            -9.5: ["Pacific/Marquesas"],
+            -9: ["America/Anchorage", "America/Juneau"],
+            -8: ["America/Los_Angeles", "America/Vancouver", "America/Tijuana"],
+            -7: ["America/Denver", "America/Phoenix", "America/Edmonton"],  # Phoenix doesn't observe DST
+            -6: ["America/Chicago", "America/Mexico_City", "America/Regina"],  # Regina doesn't observe DST
+            -5: ["America/New_York", "America/Toronto", "America/Bogota"],  # Bogota doesn't observe DST
+            -4: ["America/Halifax", "America/Puerto_Rico"],  # Puerto Rico doesn't observe DST
+            -3.5: ["America/St_Johns"],
+            -3: ["America/Sao_Paulo", "America/Argentina/Buenos_Aires"],
+            -2: ["Atlantic/South_Georgia"],
+            -1: ["Atlantic/Azores", "Atlantic/Cape_Verde"],  # Cape Verde doesn't observe DST
+            0: ["Europe/London", "UTC"],
+            1: ["Europe/Paris", "Europe/Berlin", "Africa/Lagos"],  # Lagos doesn't observe DST
+            2: ["Europe/Helsinki", "Europe/Kiev", "Africa/Cairo"],
+            3: ["Europe/Moscow", "Asia/Baghdad"],
+            3.5: ["Asia/Tehran"],
+            4: ["Asia/Dubai", "Asia/Baku"],  # Dubai doesn't observe DST
+            4.5: ["Asia/Kabul"],
+            5: ["Asia/Karachi", "Asia/Tashkent"],
+            5.5: ["Asia/Kolkata", "Asia/Colombo"],
+            5.75: ["Asia/Kathmandu"],
+            6: ["Asia/Dhaka", "Asia/Almaty"],
+            6.5: ["Asia/Yangon"],
+            7: ["Asia/Bangkok", "Asia/Ho_Chi_Minh"],
+            8: ["Asia/Singapore", "Asia/Shanghai", "Australia/Perth"],
+            8.75: ["Australia/Eucla"],
+            9: ["Asia/Tokyo", "Asia/Seoul"],
+            9.5: ["Australia/Darwin", "Australia/Adelaide"],  # Adelaide observes DST
+            10: ["Australia/Sydney", "Australia/Melbourne", "Australia/Brisbane"],  # Brisbane doesn't observe DST
+            10.5: ["Australia/Adelaide", "Australia/Lord_Howe"],
+            11: ["Pacific/Noumea", "Pacific/Guadalcanal"],
+            12: ["Pacific/Auckland", "Pacific/Fiji"],
+            13: ["Pacific/Apia", "Pacific/Tongatapu"],
+            14: ["Pacific/Kiritimati"]
+        }
+
+        # Try each timezone and find the one that matches the current offset
+        for tz_name in possible_timezones:
+            try:
+                tz = ZoneInfo(tz_name)
+                # Check if this timezone's current offset matches our target offset
+                tz_offset = current_time.astimezone(tz).utcoffset().total_seconds() / 3600
+                if abs(tz_offset - offset_hours) < 0.5:  # Allow for small differences
+                    return tz_name
+            except Exception:
+                continue
+
+        # If no matching timezone found, return UTC
+        return "UTC"
+
+    @commands.command(name="timezone", help="Set your timezone (defaults to PST)", brief="Set timezone")
+    async def set_timezone(self, ctx, timezone: str = None):
+        """Set the user's timezone. If no timezone provided, default to US Pacific Time."""
         user_id = ctx.author.id
         user_data = self.agent.db.get_user_data(user_id)
         
@@ -268,33 +328,203 @@ Example: "3x10 @20lb" or "2x8 @15lb feeling tired"
             return
 
         try:
-            # Parse the time
-            try:
-                input_time = datetime.strptime(new_time, "%H:%M")
-            except ValueError:
-                await ctx.send("❌ Please use the 24-hour format HH:MM (e.g., 09:00 or 14:30)")
-                return
+            if timezone is None:
+                # Default to US Pacific Time
+                timezone = "America/Los_Angeles"
+                await ctx.send("ℹ️ Setting your timezone to PST (US Pacific Time). You can change it by using common abbreviations like `!timezone EST` or full names like `!timezone America/New_York`")
+            else:
+                # Common abbreviation mappings
+                abbreviations = {
+                    # North America
+                    "PST": "America/Los_Angeles",
+                    "PDT": "America/Los_Angeles",
+                    "MST": "America/Denver",
+                    "MDT": "America/Denver",
+                    "CST": "America/Chicago",
+                    "CDT": "America/Chicago",
+                    "EST": "America/New_York",
+                    "EDT": "America/New_York",
+                    "AST": "America/Halifax",
+                    "ADT": "America/Halifax",
+                    "NST": "America/St_Johns",
+                    "NDT": "America/St_Johns",
+                    "AKST": "America/Anchorage",
+                    "AKDT": "America/Anchorage",
+                    "HST": "Pacific/Honolulu",
+                    
+                    # Europe
+                    "GMT": "UTC",
+                    "UTC": "UTC",
+                    "WET": "Europe/London",
+                    "BST": "Europe/London",
+                    "CET": "Europe/Paris",
+                    "CEST": "Europe/Paris",
+                    "EET": "Europe/Helsinki",
+                    "EEST": "Europe/Helsinki",
+                    
+                    # Asia
+                    "MSK": "Europe/Moscow",
+                    "IST": "Asia/Kolkata",
+                    "GST": "Asia/Dubai",
+                    "PKT": "Asia/Karachi",
+                    "BST": "Asia/Dhaka",
+                    "ICT": "Asia/Bangkok",
+                    "CST": "Asia/Shanghai",
+                    "HKT": "Asia/Hong_Kong",
+                    "JST": "Asia/Tokyo",
+                    "KST": "Asia/Seoul",
+                    
+                    # Australia/Pacific
+                    "AWST": "Australia/Perth",
+                    "ACST": "Australia/Adelaide",
+                    "ACDT": "Australia/Adelaide",
+                    "AEST": "Australia/Sydney",
+                    "AEDT": "Australia/Sydney",
+                    "NZST": "Pacific/Auckland",
+                    "NZDT": "Pacific/Auckland",
+                    
+                    # South America
+                    "ART": "America/Argentina/Buenos_Aires",
+                    "BRT": "America/Sao_Paulo",
+                    "BRST": "America/Sao_Paulo",
+                    "CLT": "America/Santiago",
+                    "CLST": "America/Santiago",
+                    
+                    # Africa
+                    "WAT": "Africa/Lagos",
+                    "CAT": "Africa/Maputo",
+                    "EAT": "Africa/Nairobi",
+                    "SAST": "Africa/Johannesburg",
+                    
+                    # Middle East
+                    "TRT": "Europe/Istanbul",
+                    "IRST": "Asia/Tehran",
+                    "IRDT": "Asia/Tehran",
+                    
+                    "ChST": "Pacific/Guam",  # Chamorro Standard Time
+                    "SST": "Pacific/Samoa",   # Samoa Standard Time
+                }
 
-            # Get user's timezone from Discord
-            user = ctx.author
-            if not user.timezone:
-                await ctx.send("❌ Please set your timezone in Discord settings first! This helps me send reminders at the right time for you.")
-                return
+                # Convert common abbreviations to canonical names
+                timezone = abbreviations.get(timezone.upper(), timezone)
 
-            # Store the time in the user's timezone
-            reminder_time = new_time
-            self.agent.db.update_user_data(user_id, {
-                "reminder_time": reminder_time,
-                "timezone": str(user.timezone)
-            })
+                # Validate timezone
+                try:
+                    ZoneInfo(timezone)
+                except Exception:
+                    await ctx.send("❌ Invalid timezone! You can use common abbreviations like `EST`, `PST`, `GMT` or full names like `America/New_York`. See full list here: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones")
+                    return
+
+            # Store the timezone
+            self.agent.db.update_user_data(user_id, {"timezone": timezone})
             
-            # Format time for display (convert to 12-hour format for readability)
-            display_time = input_time.strftime("%I:%M %p")
-            await ctx.send(f"✅ Your daily check-in time has been set to {display_time} in your timezone ({user.timezone})!")
+            # Get a friendly display name and timezone info
+            display_name = timezone.split('/')[-1].replace('_', ' ')
+            
+            # Map canonical names to abbreviations and full names
+            timezone_info = {
+                # North America
+                "America/Los_Angeles": ("PST/PDT", "Pacific Time Zone"),
+                "America/Denver": ("MST/MDT", "Mountain Time Zone"),
+                "America/Phoenix": ("MST", "Mountain Time Zone (no DST)"),
+                "America/Chicago": ("CST/CDT", "Central Time Zone"),
+                "America/New_York": ("EST/EDT", "Eastern Time Zone"),
+                "America/Halifax": ("AST/ADT", "Atlantic Time Zone"),
+                "America/St_Johns": ("NST/NDT", "Newfoundland Time Zone"),
+                "America/Anchorage": ("AKST/AKDT", "Alaska Time Zone"),
+                "Pacific/Honolulu": ("HST", "Hawaii Time Zone"),
+                "America/Tijuana": ("PST/PDT", "Pacific Time Zone"),
+                "America/Vancouver": ("PST/PDT", "Pacific Time Zone"),
+                "America/Edmonton": ("MST/MDT", "Mountain Time Zone"),
+                "America/Regina": ("CST", "Central Time Zone (no DST)"),
+                "America/Mexico_City": ("CST/CDT", "Central Time Zone"),
+                "America/Toronto": ("EST/EDT", "Eastern Time Zone"),
+                "America/Puerto_Rico": ("AST", "Atlantic Time Zone (no DST)"),
+                
+                # Europe
+                "UTC": ("UTC/GMT", "Coordinated Universal Time"),
+                "Europe/London": ("GMT/BST", "British Time Zone"),
+                "Europe/Paris": ("CET/CEST", "Central European Time Zone"),
+                "Europe/Berlin": ("CET/CEST", "Central European Time Zone"),
+                "Europe/Helsinki": ("EET/EEST", "Eastern European Time Zone"),
+                "Europe/Kiev": ("EET/EEST", "Eastern European Time Zone"),
+                "Europe/Moscow": ("MSK", "Moscow Time Zone"),
+                
+                # Asia
+                "Asia/Dubai": ("GST", "Gulf Standard Time"),
+                "Asia/Baghdad": ("AST", "Arabia Standard Time"),
+                "Asia/Tehran": ("IRST/IRDT", "Iran Time Zone"),
+                "Asia/Kabul": ("AFT", "Afghanistan Time Zone"),
+                "Asia/Karachi": ("PKT", "Pakistan Time Zone"),
+                "Asia/Tashkent": ("UZT", "Uzbekistan Time Zone"),
+                "Asia/Kolkata": ("IST", "India Time Zone"),
+                "Asia/Colombo": ("IST", "India Time Zone"),
+                "Asia/Kathmandu": ("NPT", "Nepal Time Zone"),
+                "Asia/Dhaka": ("BST", "Bangladesh Time Zone"),
+                "Asia/Yangon": ("MMT", "Myanmar Time Zone"),
+                "Asia/Bangkok": ("ICT", "Indochina Time Zone"),
+                "Asia/Ho_Chi_Minh": ("ICT", "Indochina Time Zone"),
+                "Asia/Singapore": ("SGT", "Singapore Time Zone"),
+                "Asia/Shanghai": ("CST", "China Time Zone"),
+                "Asia/Hong_Kong": ("HKT", "Hong Kong Time Zone"),
+                "Asia/Tokyo": ("JST", "Japan Time Zone"),
+                "Asia/Seoul": ("KST", "Korea Time Zone"),
+                
+                # Australia/Pacific
+                "Australia/Perth": ("AWST", "Australian Western Time Zone"),
+                "Australia/Darwin": ("ACST", "Australian Central Time Zone (no DST)"),
+                "Australia/Adelaide": ("ACST/ACDT", "Australian Central Time Zone"),
+                "Australia/Sydney": ("AEST/AEDT", "Australian Eastern Time Zone"),
+                "Australia/Melbourne": ("AEST/AEDT", "Australian Eastern Time Zone"),
+                "Australia/Brisbane": ("AEST", "Australian Eastern Time Zone (no DST)"),
+                "Pacific/Auckland": ("NZST/NZDT", "New Zealand Time Zone"),
+                "Pacific/Fiji": ("FJT/FJST", "Fiji Time Zone"),
+                "Pacific/Guam": ("ChST", "Chamorro Time Zone"),
+                "Pacific/Samoa": ("SST", "Samoa Time Zone"),
+                
+                # South America
+                "America/Argentina/Buenos_Aires": ("ART", "Argentina Time Zone"),
+                "America/Sao_Paulo": ("BRT/BRST", "Brasilia Time Zone"),
+                "America/Santiago": ("CLT/CLST", "Chile Time Zone"),
+                
+                # Africa
+                "Africa/Lagos": ("WAT", "West Africa Time Zone"),
+                "Africa/Cairo": ("EET", "Eastern European Time Zone"),
+                "Africa/Maputo": ("CAT", "Central Africa Time Zone"),
+                "Africa/Nairobi": ("EAT", "East Africa Time Zone"),
+                "Africa/Johannesburg": ("SAST", "South Africa Time Zone"),
+                
+                # Middle East
+                "Europe/Istanbul": ("TRT", "Turkey Time Zone"),
+                "Asia/Baku": ("AZT", "Azerbaijan Time Zone"),
+                
+                # Pacific Islands
+                "Pacific/Wake": ("WAKT", "Wake Island Time Zone"),
+                "Pacific/Pago_Pago": ("SST", "Samoa Time Zone"),
+                "Pacific/Marquesas": ("MART", "Marquesas Time Zone"),
+                "Pacific/Noumea": ("NCT", "New Caledonia Time Zone"),
+                "Pacific/Guadalcanal": ("SBT", "Solomon Islands Time Zone"),
+                "Pacific/Apia": ("WST/WSDT", "West Samoa Time Zone"),
+                "Pacific/Tongatapu": ("TOT", "Tonga Time Zone"),
+                "Pacific/Kiritimati": ("LINT", "Line Islands Time Zone")
+            }
+            
+            if timezone in timezone_info:
+                abbr, full_name = timezone_info[timezone]
+                await ctx.send(f"✅ Your timezone has been set to {display_name} ({abbr}, {full_name})!")
+            else:
+                # For any timezone not in our mapping, try to get the current abbreviation
+                try:
+                    tz = ZoneInfo(timezone)
+                    current_time = datetime.now(tz)
+                    abbr = current_time.strftime("%Z")
+                    await ctx.send(f"✅ Your timezone has been set to {display_name} ({abbr})!")
+                except:
+                    await ctx.send(f"✅ Your timezone has been set to {display_name}!")
             
         except Exception as e:
-            logger.error(f"Failed to set reminder time for user {user_id}: {e}")
-            await ctx.send("❌ Something went wrong while setting your reminder time. Please try again.")
+            logger.error(f"Failed to set timezone for user {user_id}: {e}")
+            await ctx.send("❌ Something went wrong while setting your timezone. Please try again.")
 
     async def _end_workout_session(self, user_id: int, force: bool = False) -> bool:
         """Helper function to end a workout session.
@@ -347,6 +577,46 @@ Example: "3x10 @20lb" or "2x8 @15lb feeling tired"
         except Exception as e:
             logger.error(f"Failed to reset user {user_id}: {e}")
             await ctx.send("❌ Something went wrong while trying to reset your data. Please try again later.")
+
+    @commands.command(name="reminder", help="Change your daily check-in time (format: HH:MM)", brief="Set check-in time")
+    async def set_reminder(self, ctx, new_time: str):
+        """Update the user's daily check-in time."""
+        user_id = ctx.author.id
+        user_data = self.agent.db.get_user_data(user_id)
+        
+        if not user_data or not user_data["onboarded"]:
+            await ctx.send("You haven't set up your fitness profile yet! Send me a message to get started.")
+            return
+
+        try:
+            # Parse the time
+            try:
+                input_time = datetime.strptime(new_time, "%H:%M")
+            except ValueError:
+                await ctx.send("❌ Please use the 24-hour format HH:MM (e.g., 09:00 or 14:30)")
+                return
+
+            # Get user's timezone from database or use default
+            user_timezone = user_data.get("timezone")
+            if not user_timezone:
+                user_timezone = "America/Los_Angeles"  # Default to PST
+                self.agent.db.update_user_data(user_id, {"timezone": user_timezone})
+                await ctx.send("ℹ️ Using PST (US Pacific Time) as your timezone. Use `!timezone` command to change it if needed.")
+
+            # Store the time in the database
+            reminder_time = new_time
+            self.agent.db.update_user_data(user_id, {
+                "reminder_time": reminder_time
+            })
+            
+            # Format time for display (convert to 12-hour format for readability)
+            display_time = input_time.strftime("%I:%M %p")
+            display_zone = user_timezone.split('/')[-1].replace('_', ' ')
+            await ctx.send(f"✅ Your daily check-in time has been set to {display_time} {display_zone}!")
+            
+        except Exception as e:
+            logger.error(f"Failed to set reminder time for user {user_id}: {e}")
+            await ctx.send("❌ Something went wrong while setting your reminder time. Please try again.")
 
 @bot.event
 async def on_ready():
