@@ -54,7 +54,8 @@ class FitnessTracking(commands.Cog):
         try:
             await ctx.send("🏋️‍♂️ Generating your personalized workout plan...")
             try:
-                workout_plan = await self.agent.generate_workout(user_id)
+                async with ctx.typing():  # Show typing indicator while generating workout
+                    workout_plan = await self.agent.generate_workout(user_id)
             except SDKError as e:
                 if "rate limit" in str(e).lower():
                     await ctx.send("😔 Sorry! The AI is a bit overwhelmed right now. Please wait a minute and try again!")
@@ -67,19 +68,10 @@ class FitnessTracking(commands.Cog):
             logger.info(f"workout_plan: {workout_plan}")    
             plan_display = self.format_workout_plan(workout_plan)
             logger.info(f"plan_display: {plan_display}") 
-            await ctx.send(f"Here's your workout plan for today:\n\n{plan_display}\n\nReady to start? Type `yes` to begin!")
+            await ctx.send(f"Here's your workout plan for today:\n\n{plan_display}")
             
-            def check(m):
-                return m.author == ctx.author and m.channel == ctx.channel
-                
-            try:
-                msg = await self.bot.wait_for('message', check=check, timeout=300)  # 5 minute timeout
-                if msg.content.lower() == 'yes':
-                    await self.start_interactive_workout(ctx, workout_plan)
-                else:
-                    await ctx.send("Workout cancelled. Start when you're ready!")
-            except asyncio.TimeoutError:
-                await ctx.send("No response received. Workout cancelled. Use `!start_workout` when you're ready!")
+            # Start workout immediately
+            await self.start_interactive_workout(ctx, workout_plan)
                 
         except Exception as e:
             logger.error(f"Failed to start workout for user {user_id}: {str(e)}")
@@ -98,6 +90,12 @@ class FitnessTracking(commands.Cog):
         
         try:
             for exercise in workout_plan["exercises"]:
+                # Check if workout has been ended
+                user_data = self.agent.db.get_user_data(user_id)
+                if not user_data.get("current_workout"):
+                    # Workout was ended, stop the loop
+                    return
+                    
                 await ctx.send(f"""
 🔄 Next exercise: **{exercise['name']}**
 Sets: {exercise['sets']}
@@ -114,10 +112,20 @@ Need to stop early? Use `!end_workout` to end your session and save your progres
 """)
                 
                 def check(m):
+                    # Return False if message is !end_workout (to break out of wait_for)
+                    if m.content.lower() == "!end_workout":
+                        return False
+                    # Otherwise check if message is from the same user and channel
                     return m.author == ctx.author and m.channel == ctx.channel
                     
                 try:
                     msg = await self.bot.wait_for('message', check=check, timeout=1800)  # 30 min timeout
+                    
+                    # If we get here and the workout was ended, stop processing
+                    user_data = self.agent.db.get_user_data(user_id)
+                    if not user_data.get("current_workout"):
+                        return
+                        
                     try:
                         performance = await self.agent.evaluate_exercise_performance(
                             user_id,
@@ -215,6 +223,26 @@ Need to stop early? Use `!end_workout` to end your session and save your progres
             
         return output
 
+    def truncate_message(self, message: str, limit: int = 2000) -> str:
+        """Truncate a message to stay within Discord's character limit while preserving formatting."""
+        if len(message) <= limit:
+            return message
+            
+        # Find the last complete sentence that fits
+        sentences = message.split('.')
+        truncated = ''
+        for sentence in sentences:
+            if len(truncated) + len(sentence) + 1 > limit - 3:  # -3 for '...'
+                break
+            truncated += sentence + '.'
+            
+        return truncated.strip() + '...'
+
+    async def _send_truncated_response(self, ctx, response: str):
+        """Send a response, ensuring it stays within Discord's character limit."""
+        truncated = self.truncate_message(response)
+        await ctx.send(truncated)
+
     @commands.command(name="streak", help="Check your fitness progress and streak", brief="Check your streak")
     async def streak(self, ctx):
         """Show the user's fitness progress and streak information."""
@@ -232,7 +260,7 @@ Need to stop early? Use `!end_workout` to end your session and save your progres
             f"📊 **Your Milestones**:\n{user_data['milestones']}\n\n"
             f"⏰ **Daily Check-in Time**: {user_data['reminder_time']}"
         )
-        await ctx.send(response)
+        await self._send_truncated_response(ctx, response)
 
     @commands.command(name="progress", help="View your progress log (default: last 7 days)", brief="View progress log")
     async def progress(self, ctx, days: int = 7):
@@ -258,7 +286,103 @@ Need to stop early? Use `!end_workout` to end your session and save your progres
             status = "✅" if entry["completed"] else "❌"
             response += f"{date}: {status} - {entry['message'][:50]}...\n"
 
-        await ctx.send(response)
+        await self._send_truncated_response(ctx, response)
+
+    @commands.command(name="change_progress", help="Change today's progress entry", brief="Change today's progress")
+    async def change_progress(self, ctx):
+        """Change the progress entry for today."""
+        user_id = ctx.author.id
+        user_data = self.agent.db.get_user_data(user_id)
+        
+        if not user_data or not user_data["onboarded"]:
+            await ctx.send("You haven't set up your fitness profile yet! Send me a message to get started.")
+            return
+
+        # Get user's timezone and current date
+        timezone_str = user_data.get("timezone", "America/Los_Angeles")
+        try:
+            user_tz = ZoneInfo(timezone_str)
+        except Exception:
+            user_tz = ZoneInfo("America/Los_Angeles")
+        
+        current_date = datetime.now(user_tz).strftime("%Y-%m-%d")
+        
+        # Check if there's progress to change
+        if current_date not in user_data.get("progress_log", {}):
+            await ctx.send("No progress logged today to change!")
+            return
+        
+        # Reset streak if today's progress was completed
+        if user_data["progress_log"][current_date].get("completed", False):
+            self.agent.update_streak(user_id, completed=False)
+        
+        # Remove today's progress entry
+        self.agent.db.update_user_data(user_id, {
+            f"progress_log.{current_date}": None
+        })
+        
+        await ctx.send("✨ Today's progress has been cleared. You can now log your progress again!")
+
+    @commands.command(name="add_progress", help="Force add a progress entry for today", brief="Force add progress")
+    async def add_progress(self, ctx, *, message: str):
+        """Force add a progress entry for today, even if one already exists."""
+        user_id = ctx.author.id
+        user_data = self.agent.db.get_user_data(user_id)
+        
+        if not user_data or not user_data["onboarded"]:
+            await ctx.send("You haven't set up your fitness profile yet! Send me a message to get started.")
+            return
+
+        # Get user's timezone and current date
+        timezone_str = user_data.get("timezone", "America/Los_Angeles")
+        try:
+            user_tz = ZoneInfo(timezone_str)
+        except Exception:
+            user_tz = ZoneInfo("America/Los_Angeles")
+        
+        current_time = datetime.now(user_tz)
+        current_date = current_time.strftime("%Y-%m-%d")
+        
+        try:
+            # Use LLM to determine if the message indicates completion
+            completion_check_messages = [
+                {"role": "system", "content": COMPLETION_ANALYZER_PROMPT},
+                {"role": "system", "content": f"The user's fitness goal is: {user_data['fitness_goal']}"},
+                {"role": "user", "content": message}
+            ]
+            
+            completion_response = await self.agent.client.chat.complete_async(
+                model=MISTRAL_MODEL,
+                messages=completion_check_messages,
+            )
+            
+            completion_result = completion_response.choices[0].message.content.strip().lower()
+            
+            # Update progress log
+            progress_entry = {
+                "message": message,
+                "completed": completion_result == 'completed',
+                "timestamp": current_time.isoformat(),
+                "forced_update": True
+            }
+            
+            # Update the progress log
+            self.agent.db.update_progress_log(user_id, current_date, progress_entry)
+            
+            # Update streak based on completion
+            if completion_result == 'completed':
+                streak_milestone = self.agent.update_streak(user_id, completed=True)
+                if streak_milestone:
+                    await ctx.send(f"Progress updated! {streak_milestone}")
+                else:
+                    await ctx.send("✅ Progress has been updated successfully!")
+            else:
+                self.agent.update_streak(user_id, completed=False)
+                await ctx.send("Progress has been updated, but marked as incomplete.")
+                
+        except Exception as e:
+            logger.error(f"Error adding progress: {e}")
+            await ctx.send("❌ Something went wrong while updating your progress. Please try again.")
 
     def _get_timezone_from_offset(self, offset_hours, current_time):
         """Convert UTC offset to closest timezone name, considering DST."""
@@ -672,6 +796,13 @@ async def on_message(message: discord.Message):
     if message.author.bot or message.content.startswith("!"):
         return
 
+    # Check if user has an active workout session
+    user_id = message.author.id
+    user_data = agent.db.get_user_data(user_id)
+    if user_data and user_data.get("current_workout"):
+        # Skip processing if user is in workout mode
+        return
+
     # Process the message with the agent
     logger.info(f"Processing message from {message.author}: {message.content}")
     
@@ -679,19 +810,15 @@ async def on_message(message: discord.Message):
     async with message.channel.typing():
         try:
             response = await agent.run(message)
+            # Get the cog instance to use its helper methods
+            cog = bot.get_cog("FitnessTracking")
+            truncated_response = cog.truncate_message(response)
+            await message.reply(truncated_response)
         except SDKError as e:
             if "rate limit" in str(e).lower():
                 await message.reply("😔 Sorry! The AI is a bit overwhelmed right now. Please wait a minute and try again!")
                 return
             raise e
-    
-    # Check if the message exceeds the character limit
-    if len(response) > MAX_MESSAGE_LENGTH:
-        # Split the response into smaller parts if it exceeds the limit
-        for i in range(0, len(response), MAX_MESSAGE_LENGTH):
-            await message.channel.send(response[i:i + MAX_MESSAGE_LENGTH])
-    else:
-        await message.reply(response)
 
 
 # Commands

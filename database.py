@@ -2,6 +2,9 @@ from pymongo import MongoClient
 from datetime import datetime
 import os
 from typing import Dict, Any, Optional
+import logging
+
+logger = logging.getLogger(__name__)
 
 class Database:
     def __init__(self):
@@ -64,10 +67,39 @@ class Database:
 
     def update_progress_log(self, user_id: int, date: str, entry: Dict[str, Any]) -> None:
         """Update the progress log for a specific date"""
-        self.users.update_one(
-            {"_id": user_id},
-            {"$set": {f"progress_log.{date}": entry}}
-        )
+        try:
+            # First verify the user exists
+            user = self.users.find_one({"_id": user_id})
+            if not user:
+                logger.error(f"User {user_id} not found when updating progress log")
+                return
+
+            # Ensure progress_log exists
+            if "progress_log" not in user:
+                logger.info(f"Initializing progress_log for user {user_id}")
+                self.users.update_one(
+                    {"_id": user_id},
+                    {"$set": {"progress_log": {}}}
+                )
+
+            # Update the progress log for the specific date
+            result = self.users.update_one(
+                {"_id": user_id},
+                {"$set": {f"progress_log.{date}": entry}}
+            )
+            
+            logger.info(f"Progress log update result - matched: {result.matched_count}, modified: {result.modified_count}")
+            
+            # Verify the update
+            updated_user = self.users.find_one({"_id": user_id})
+            if date in updated_user.get("progress_log", {}):
+                logger.info(f"Successfully verified progress log update for user {user_id} on {date}")
+            else:
+                logger.error(f"Failed to verify progress log update for user {user_id} on {date}")
+                
+        except Exception as e:
+            logger.error(f"Error updating progress log for user {user_id}: {e}")
+            raise
 
     def get_all_users(self):
         """Get all users for reminder checking"""

@@ -6,6 +6,7 @@ import logging
 from database import Database
 from typing import Dict, Any
 from zoneinfo import ZoneInfo
+import json
 
 MISTRAL_MODEL = "mistral-large-latest"
 SYSTEM_PROMPT = """You are a knowledgeable and motivating fitness coach. Help users achieve their gym goals by:
@@ -15,7 +16,8 @@ SYSTEM_PROMPT = """You are a knowledgeable and motivating fitness coach. Help us
 4. Celebrating fitness achievements, no matter how small
 5. Helping users overcome plateaus and challenges
 6. Ensuring safe progression and proper recovery
-Make sure your responses are less than 2000 words in length."""
+
+Keep your responses under 2000 characters. Be concise but impactful - focus on the most relevant information and actionable advice."""
 
 COMMANDS_HELP = """
 Here are all the available commands:
@@ -24,6 +26,8 @@ Here are all the available commands:
 • `!end_workout` - End your current workout session
 • `!streak` - Check your current workout streak and progress
 • `!progress [days]` - View your workout log (default: last 7 days)
+• `!change_progress` - Clear today's progress entry if you want to log again
+• `!add_progress <message>` - Force add a progress entry for today
 • `!reminder HH:MM` - Change your daily check-in time (e.g., !reminder 20:00)
 • `!timezone [zone]` - Set your timezone (defaults to PST, e.g., !timezone EST or !timezone America/New_York)
 • `!reset` - Reset your fitness tracking and start fresh
@@ -49,6 +53,7 @@ To get started, please tell me:
 5. What time would you like me to check in with you daily? (e.g., '8:00 PM')
 6. What timezone are you in? (e.g., 'PST', 'EST', or full names like 'America/New_York')
 
+Please provide all this information in a single message, and I'll help you get started! 💪
 """ + COMMANDS_HELP
 
 REMINDER_MESSAGE = """Hey fitness warrior! 💪 I noticed you haven't checked in about your workout today. How's your progress with "{fitness_goal}"? 
@@ -77,9 +82,7 @@ Only mark as incomplete if the user clearly indicates they:
 3. Explicitly states they did not work out
 
 Respond with EXACTLY one word: either 'completed' or 'incomplete'.
-Consider context and nuance rather than just looking for specific words.
-
-Make sure your responses are less than 2000 words in length."""
+Consider context and nuance rather than just looking for specific words."""
 
 STREAK_MILESTONES = {
     3: "💪 3-day streak! Building that gym consistency!",
@@ -139,10 +142,7 @@ Consider:
 - Comparison to previous performances
 - Safety first - when in doubt, maintain current level
 
-Respond with EXACTLY one word: 'decrease', 'maintain', or 'increase'
-
-Make sure your responses are less than 1000 words in length.
-"""
+Respond with EXACTLY one word: 'decrease', 'maintain', or 'increase'"""
 
 # Setup logging
 logger = logging.getLogger("discord")
@@ -177,15 +177,31 @@ class MistralAgent:
         """Check if we should send a reminder to the user"""
         logger.info(f"Should send reminder?")
         user_data = self.db.get_user_data(user_id)
-        if not user_data or not user_data["onboarded"] or not user_data["timezone"]:
+        if not user_data or not user_data["onboarded"]:
             return False
         
         last_check_in = datetime.strptime(user_data["last_check_in"], "%Y-%m-%d")
         last_reminder = datetime.strptime(user_data.get("last_reminder_sent", "2000-01-01"), "%Y-%m-%d")
         reminder_time = datetime.strptime(user_data["reminder_time"], "%H:%M").time()
         
+        # Get user's timezone with proper validation
+        timezone_str = user_data.get("timezone")
+        if not timezone_str:
+            # If no timezone set, use default and update user data
+            timezone_str = "America/Los_Angeles"
+            self.db.update_user_data(user_id, {"timezone": timezone_str})
+            logger.info(f"No timezone found for user {user_id}, setting default: {timezone_str}")
+        
+        try:
+            user_tz = ZoneInfo(timezone_str)
+        except Exception as e:
+            # If timezone is invalid, fallback to default
+            logger.error(f"Invalid timezone {timezone_str} for user {user_id}: {e}")
+            timezone_str = "America/Los_Angeles"
+            user_tz = ZoneInfo(timezone_str)
+            self.db.update_user_data(user_id, {"timezone": timezone_str})
+        
         # Get current time in user's timezone
-        user_tz = ZoneInfo(user_data["timezone"])
         current_time = datetime.now(user_tz)
         current_date = current_time.date()
         
@@ -214,7 +230,6 @@ class MistralAgent:
 
     async def run(self, message: discord.Message):
         user_id = message.author.id
-        current_date = datetime.now().strftime("%Y-%m-%d")
         
         # Get or create user data
         user_data = self.db.get_user_data(user_id)
@@ -224,15 +239,35 @@ class MistralAgent:
             self.db.update_conversation_history(user_id, {
                 "role": "assistant",
                 "content": ONBOARDING_PROMPT,
-                "date": current_date
+                "date": datetime.now().strftime("%Y-%m-%d")
             })
             return ONBOARDING_PROMPT  # Early return for new users
+
+        # Get user's timezone with proper validation
+        timezone_str = user_data.get("timezone")
+        if not timezone_str:
+            # If no timezone set, use default and update user data
+            timezone_str = "America/Los_Angeles"
+            self.db.update_user_data(user_id, {"timezone": timezone_str})
+            logger.info(f"No timezone found for user {user_id}, setting default: {timezone_str}")
+        
+        try:
+            user_tz = ZoneInfo(timezone_str)
+        except Exception as e:
+            # If timezone is invalid, fallback to default
+            logger.error(f"Invalid timezone {timezone_str} for user {user_id}: {e}")
+            timezone_str = "America/Los_Angeles"
+            user_tz = ZoneInfo(timezone_str)
+            self.db.update_user_data(user_id, {"timezone": timezone_str})
+        
+        current_time = datetime.now(user_tz)
+        current_date_str = current_time.strftime("%Y-%m-%d")
         
         # Add message to conversation history
         message_entry = {
             "role": "user",
             "content": message.content,
-            "date": current_date
+            "date": current_date_str
         }
         self.db.update_conversation_history(user_id, message_entry)
         
@@ -278,6 +313,39 @@ Examples:
                     "timezone": "America/Los_Angeles"
                 })
             
+            # Extract experience level and limitations using LLM
+            experience_prompt = """You are a fitness profile analyzer. Extract the user's experience level and any limitations/injuries from their message.
+Respond in exactly this format:
+EXPERIENCE|LIMITATIONS
+Examples:
+"I'm a beginner, no injuries" -> "beginner|none"
+"intermediate lifter with bad knee" -> "intermediate|knee injury"
+"advanced, shoulder pain and can't do pullups" -> "advanced|shoulder injury, limited pull exercises"
+"""
+            messages = [
+                {"role": "system", "content": experience_prompt},
+                {"role": "user", "content": message.content}
+            ]
+            
+            experience_response = await self.client.chat.complete_async(
+                model=MISTRAL_MODEL,
+                messages=messages,
+            )
+            
+            try:
+                experience_level, limitations = experience_response.choices[0].message.content.strip().split('|')
+                self.db.update_user_data(user_id, {
+                    "experience_level": experience_level.strip(),
+                    "limitations": limitations.strip() if limitations.strip().lower() != "none" else ""
+                })
+                logger.info(f"Set experience level to {experience_level} and limitations to {limitations}")
+            except Exception as e:
+                logger.error(f"Invalid format from LLM: {experience_response.choices[0].message.content}, using defaults")
+                self.db.update_user_data(user_id, {
+                    "experience_level": "beginner",
+                    "limitations": ""
+                })
+            
             # Update user data for onboarding
             self.db.update_user_data(user_id, {
                 "fitness_goal": message.content,
@@ -311,14 +379,13 @@ Examples:
             self.db.update_conversation_history(user_id, {
                 "role": "assistant",
                 "content": response,
-                "date": current_date
+                "date": current_date_str
             })
             
-            self.db.update_user_data(user_id, {"last_check_in": current_date})
+            self.db.update_user_data(user_id, {"last_check_in": current_date_str})
             return response
         
         # For subsequent conversations
-        user_data = self.db.get_user_data(user_id)  # Get fresh data
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "system", "content": f"User's fitness goal: {user_data['fitness_goal']}"},
@@ -336,10 +403,78 @@ Examples:
         
         messages.append({"role": "user", "content": message.content})
         
-        # Check for new day
-        if user_data["last_check_in"] != current_date:
-            messages.append({"role": "system", "content": "This is a new day. Ask about progress on their workout and provide encouragement. If they completed their workout, celebrate. If not, show understanding and help identify obstacles."})
-            self.db.update_user_data(user_id, {"last_check_in": current_date})
+        # Initialize progress_log if it doesn't exist
+        if "progress_log" not in user_data:
+            logger.info(f"Initializing progress_log for user {user_id}")
+            self.db.update_user_data(user_id, {"progress_log": {}})
+            user_data["progress_log"] = {}
+        
+        # Get last check-in date in user's timezone
+        last_check_in = datetime.strptime(user_data["last_check_in"], "%Y-%m-%d").replace(tzinfo=user_tz)
+        
+        # Check if this is a new check-in (either a new day or first check-in of the day)
+        current_date = current_time.date()
+        last_check_in_date = last_check_in.date()
+        is_new_day = current_date > last_check_in_date
+        progress_already_logged = current_date_str in user_data.get("progress_log", {})
+        
+        logger.info(f"Last check-in: {last_check_in}, Current time: {current_time} (timezone: {user_tz})")
+        logger.info(f"Last check-in date: {last_check_in_date}, Current date: {current_date}")
+        logger.info(f"Is new day: {is_new_day}, Progress already logged: {progress_already_logged}")
+        
+        # Process progress update if it's a new day or first check-in of the day
+        if not progress_already_logged:
+            logger.info("Processing progress update")
+            # Use LLM to determine if the message indicates completion
+            completion_check_messages = [
+                {"role": "system", "content": COMPLETION_ANALYZER_PROMPT},
+                {"role": "system", "content": f"The user's fitness goal is: {user_data['fitness_goal']}"},
+                {"role": "user", "content": message.content}
+            ]
+            
+            completion_response = await self.client.chat.complete_async(
+                model=MISTRAL_MODEL,
+                messages=completion_check_messages,
+            )
+            
+            completion_result = completion_response.choices[0].message.content.strip().lower()
+            logger.info(f"Completion result: {completion_result}")
+            
+            # Update progress log first
+            progress_entry = {
+                "message": message.content,
+                "completed": completion_result == 'completed',
+                "timestamp": current_time.isoformat()
+            }
+            logger.info(f"Updating progress log for {current_date_str} with entry: {progress_entry}")
+            self.db.update_progress_log(user_id, current_date_str, progress_entry)
+            
+            # Update last check-in date
+            self.db.update_user_data(user_id, {"last_check_in": current_date_str})
+            
+            # Update streak after progress is logged
+            if completion_result == 'completed':
+                streak_milestone = self.update_streak(user_id, completed=True)
+                if streak_milestone:
+                    messages.append({"role": "system", "content": f"The user has achieved a milestone: {streak_milestone}"})
+            else:
+                self.update_streak(user_id, completed=False)
+            
+            messages.append({"role": "system", "content": "This is a new day. Respond to their progress update with encouragement and feedback."})
+            logger.info(f"Updated progress log for {current_date_str}")
+            
+            # Verify the update was successful
+            updated_user_data = self.db.get_user_data(user_id)
+            if current_date_str in updated_user_data.get("progress_log", {}):
+                logger.info("Progress log update verified successfully")
+            else:
+                logger.error("Progress log update could not be verified")
+        else:
+            if not is_new_day:
+                logger.info("Not processing progress - not a new day")
+            elif progress_already_logged:
+                logger.info("Not processing progress - already logged today")
+            messages.append({"role": "system", "content": "This is not a new day or progress was already logged. Respond conversationally and provide guidance or motivation as needed."})
         
         response = await self.client.chat.complete_async(
             model=MISTRAL_MODEL,
@@ -348,38 +483,15 @@ Examples:
         
         response_message = response.choices[0].message.content
         
-        # Use LLM to determine if the message indicates completion
-        completion_check_messages = [
-            {"role": "system", "content": COMPLETION_ANALYZER_PROMPT},
-            {"role": "system", "content": f"The user's fitness goal is: {user_data['fitness_goal']}"},
-            {"role": "user", "content": message.content}
-        ]
-        
-        completion_response = await self.client.chat.complete_async(
-            model=MISTRAL_MODEL,
-            messages=completion_check_messages,
-        )
-        
-        completion_result = completion_response.choices[0].message.content.strip().lower()
-        
-        if completion_result == 'completed':
-            streak_milestone = self.update_streak(user_id, completed=True)
-            if streak_milestone:
-                response_message = f"{response_message}\n\n{streak_milestone}"
-        elif completion_result == 'incomplete':
-            self.update_streak(user_id, completed=False)
-        
-        # Update progress log
-        self.db.update_progress_log(user_id, current_date, {
-            "message": message.content,
-            "completed": self.db.get_user_data(user_id)["current_streak"] > 0
-        })
+        # Add milestone message if it exists and this was a progress update
+        if is_new_day and 'streak_milestone' in locals() and streak_milestone:
+            response_message = f"{response_message}\n\n{streak_milestone}"
         
         # Store response in history
         self.db.update_conversation_history(user_id, {
             "role": "assistant",
             "content": response_message,
-            "date": current_date
+            "date": current_date_str
         })
         
         return response_message
@@ -411,9 +523,15 @@ Examples:
 
         # Get exercise history for progressive overload
         exercise_history = user_data.get("exercise_history", {})
-        goal = user_data.get("fitness_goal", "Not specified")
-        experience_level = user_data.get("experience_level", "Not specified")
-        limitations = user_data.get("limitations", "Not specified")
+        goal = user_data.get("fitness_goal", "general fitness")
+        experience_level = user_data.get("experience_level", "beginner").lower()
+        limitations = user_data.get("limitations", "")
+
+        # Validate experience level
+        if experience_level not in ["beginner", "intermediate", "advanced"]:
+            logger.warning(f"Invalid experience level '{experience_level}', defaulting to beginner")
+            experience_level = "beginner"
+            self.db.update_user_data(user_id, {"experience_level": experience_level})
 
         example_format = {
             "warmup": "5 minutes light treadmill, arm circles, leg swings, etc.",
@@ -433,7 +551,7 @@ Examples:
 1. User's goal: {str(goal)}
 2. Experience level: {str(experience_level)}
 3. Previous performance: {str(exercise_history)}
-4. Any limitations: {str(limitations)}
+4. Any limitations: {str(limitations) if limitations else "none"}
 
 Format the response as a JSON-like structure with exercises, sets, reps, and weights.
 Include a mix of:
@@ -441,7 +559,12 @@ Include a mix of:
 - 2-3 main compound exercises
 - 3-4 targeted exercises for their specific goals
 - 5 min cooldown
+
+For beginners or those with limitations, focus on bodyweight exercises and proper form.
+For intermediate/advanced, include progressive overload based on their history.
+
 Each exercise should include clear instructions and form cues.
+Use "bodyweight" for weight when appropriate.
 
 Example format:
 {str(example_format)}
@@ -449,20 +572,17 @@ Example format:
 Make sure your responses are less than 1000 words in length.
 """
 
-        
         messages = [
             {"role": "system", "content": workout_generator_prompt}
         ]
 
-        response = await self.client.chat.complete_async(
-            model=MISTRAL_MODEL,
-            messages=messages,
-        )
-        logger.info(f"workout_response: {response}")
-        
-        # Parse the response as JSON
-        import json
         try:
+            response = await self.client.chat.complete_async(
+                model=MISTRAL_MODEL,
+                messages=messages,
+            )
+            logger.info(f"workout_response: {response}")
+            
             # Clean up the response to ensure it's valid JSON
             response_text = response.choices[0].message.content
             # Remove any markdown code block markers if present
@@ -478,6 +598,19 @@ Make sure your responses are less than 1000 words in length.
                 workout_plan["warmup"] = "5 minutes light cardio and dynamic stretching"
             if "cooldown" not in workout_plan:
                 workout_plan["cooldown"] = "5 minutes stretching"
+            
+            # Validate each exercise has required fields
+            for exercise in workout_plan["exercises"]:
+                if "name" not in exercise:
+                    exercise["name"] = "Bodyweight Exercise"
+                if "sets" not in exercise:
+                    exercise["sets"] = 3
+                if "reps" not in exercise:
+                    exercise["reps"] = "10"
+                if "weight" not in exercise:
+                    exercise["weight"] = "bodyweight"
+                if "form_cues" not in exercise:
+                    exercise["form_cues"] = "Focus on proper form and controlled movements"
             
             logger.info(f"Starting workout session")
             self.db.start_workout_session(user_id, workout_plan)
@@ -548,7 +681,7 @@ Make sure your responses are less than 1000 words in length.
     async def generate_workout_summary(self, session_results: Dict[str, Any]) -> str:
         """Generate a summary of the workout session"""
         messages = [
-            {"role": "system", "content": "You are a supportive fitness coach. Create an encouraging summary of the workout session, highlighting achievements and areas for improvement."},
+            {"role": "system", "content": "You are a supportive fitness coach. Create a brief but encouraging summary of the workout session, highlighting key achievements and areas for improvement. Keep your response under 500 characters to be concise yet motivating."},
             {"role": "user", "content": str(session_results)}
         ]
         
