@@ -64,7 +64,8 @@ COMPLETION_ANALYZER_PROMPT = """You are a fitness progress analyzer.
 Your task is to determine if a user's message indicates they completed their workout or if it was a planned rest day.
 Consider that rest days, when planned and communicated, count as completed.
 Respond with EXACTLY one word: either 'completed' or 'incomplete'.
-Consider context and nuance rather than just looking for specific words."""
+Consider context and nuance rather than just looking for specific words.
+Make sure your responses are less than 2000 words in length."""
 
 STREAK_MILESTONES = {
     3: "💪 3-day streak! Building that gym consistency!",
@@ -103,7 +104,10 @@ Example format:
         }
     ],
     "cooldown": "5 minutes stretching focusing on worked muscle groups"
-}"""
+}
+
+Make sure your responses are less than 2000 words in length.
+"""
 
 EXERCISE_EVALUATION_PROMPT = """You are a fitness performance analyzer.
 Target: {target_performance}
@@ -121,7 +125,10 @@ Consider:
 - Comparison to previous performances
 - Safety first - when in doubt, maintain current level
 
-Respond with EXACTLY one word: 'decrease', 'maintain', or 'increase'"""
+Respond with EXACTLY one word: 'decrease', 'maintain', or 'increase'
+
+Make sure your responses are less than 2000 words in length.
+"""
 
 # Setup logging
 logger = logging.getLogger("discord")
@@ -423,7 +430,10 @@ Include a mix of:
 Each exercise should include clear instructions and form cues.
 
 Example format:
-{str(example_format)}"""
+{str(example_format)}
+
+Make sure your responses are less than 2000 words in length.
+"""
 
         
         messages = [
