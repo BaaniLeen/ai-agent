@@ -93,6 +93,7 @@ python bot.py
 ### User Commands
 
 - `!start_workout` - Begin an interactive workout session
+- `!end_workout` - End an interactive workout session
 - `!streak` - Check your current workout streak
 - `!progress [days]` - View your workout history
 - `!reminder HH:MM` - Set daily check-in time
@@ -185,10 +186,8 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## Acknowledgments 🙏
 
-- Discord.py library
 - Mistral AI
-- MongoDB
-- Help from Cursor!
+- Help from Cursor! :)
 
 ## Support 💬
 
