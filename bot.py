@@ -130,18 +130,25 @@ async def on_ready():
 @tasks.loop(minutes=5)  # Check every 5 minutes
 async def check_reminders():
     """Check if any users need reminders and send them."""
-
-    logger.info(f"Checking reminders, user_data: {agent.user_data}")
-    all_users = agent.db.get_all_users()
+    all_users = list(agent.db.get_all_users())  # Convert cursor to list
+    logger.info(f"Checking reminders for {len(all_users)} users...")
+    
+    # Log summary of each user's state
     for user_data in all_users:
+        logger.info(f"User {user_data['_id']}: "
+                   f"habit='{user_data.get('habit_goal', 'Not set')}', "
+                   f"reminder_time={user_data.get('reminder_time', 'Not set')}, "
+                   f"last_check_in={user_data.get('last_check_in', 'Never')}, "
+                   f"streak={user_data.get('current_streak', 0)}")
+        
         user_id = user_data["_id"]
-        if agent.should_send_reminder(user_id):
-            try:
+        try:
+            if agent.should_send_reminder(user_id):
                 user = await bot.fetch_user(user_id)
                 if user:
                     await agent.send_reminder(user_id, user)
-            except Exception as e:
-                logger.error(f"Failed to send reminder to user {user_id}: {e}")
+        except Exception as e:
+            logger.error(f"Failed to process reminder for user {user_id}: {e}")
 
 
 @bot.event
