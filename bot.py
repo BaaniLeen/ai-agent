@@ -633,7 +633,7 @@ async def on_ready():
     check_reminders.start()
 
 
-@tasks.loop(minutes=5)  # Check every 5 minutes
+@tasks.loop(minutes=1)  # Check every minute
 async def check_reminders():
     """Check if any users need reminders and send them."""
     all_users = list(agent.db.get_all_users())  # Convert cursor to list

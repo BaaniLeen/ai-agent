@@ -120,7 +120,7 @@ Example format:
     "cooldown": "5 minutes stretching focusing on worked muscle groups"
 }
 
-Make sure your responses are less than 2000 words in length.
+Make sure your responses are less than 1000 words in length.
 """
 
 EXERCISE_EVALUATION_PROMPT = """You are a fitness performance analyzer.
@@ -141,7 +141,7 @@ Consider:
 
 Respond with EXACTLY one word: 'decrease', 'maintain', or 'increase'
 
-Make sure your responses are less than 2000 words in length.
+Make sure your responses are less than 1000 words in length.
 """
 
 # Setup logging
@@ -446,7 +446,7 @@ Each exercise should include clear instructions and form cues.
 Example format:
 {str(example_format)}
 
-Make sure your responses are less than 2000 words in length.
+Make sure your responses are less than 1000 words in length.
 """
 
         
