@@ -13,7 +13,7 @@ This Discord bot combines the power of large language models with structured fit
 - Track progress over time
 - Get form tips and exercise suggestions
 
-## Architecture 🏗️
+## High-level Architecture 🏗️
 
 ![GrowBuddy](https://github.com/user-attachments/assets/1309b6be-2e53-4950-826e-00009ee9c37b)
 
@@ -39,6 +39,11 @@ This Discord bot combines the power of large language models with structured fit
    - MongoDB for persistent storage
    - Tracks user progress and streaks
    - Stores conversation history and workout data
+
+## Architecture
+
+<img width="880" alt="Screenshot 2025-03-12 at 11 00 11 AM" src="https://github.com/user-attachments/assets/6a442392-31c4-434f-9b20-f86981132a52" />
+
 
 ## Getting Started 🚀
 
