@@ -24,14 +24,25 @@ class Database:
         user_data = {
             "_id": user_id,
             "onboarded": False,
-            "habit_goal": "",
+            "fitness_goal": "",
+            "starting_metrics": {},
+            "experience_level": "",
+            "limitations": "",
             "milestones": [],
             "last_check_in": current_date,
-            "reminder_time": "09:00",
+            "reminder_time": "20:00",
+            "timezone": None,  # Added timezone field
             "current_streak": 0,
             "longest_streak": 0,
             "conversation_history": [],
-            "progress_log": {}
+            "progress_log": {},
+            "rest_days": [],
+            # New fields for workout tracking
+            "exercise_history": {},  # Track performance for each exercise
+            "current_workout": None,  # Store ongoing workout session
+            "workout_sessions": [],  # Store completed workout sessions
+            "max_weights": {},  # Track max weights for progressive overload
+            "preferred_exercises": []  # Store exercises that work well for the user
         }
         self.users.insert_one(user_data)
         return user_data
@@ -63,4 +74,32 @@ class Database:
 
     def delete_user(self, user_id: int) -> None:
         """Delete a user's data from the database"""
-        self.users.delete_one({"_id": user_id}) 
+        self.users.delete_one({"_id": user_id})
+
+    def update_exercise_history(self, user_id: int, exercise: str, performance: Dict[str, Any]) -> None:
+        """Update the exercise history for a user"""
+        date = datetime.now().strftime("%Y-%m-%d")
+        self.users.update_one(
+            {"_id": user_id},
+            {"$push": {f"exercise_history.{exercise}": {
+                "date": date,
+                **performance
+            }}}
+        )
+
+    def start_workout_session(self, user_id: int, workout_plan: Dict[str, Any]) -> None:
+        """Start a new workout session"""
+        self.users.update_one(
+            {"_id": user_id},
+            {"$set": {"current_workout": workout_plan}}
+        )
+
+    def complete_workout_session(self, user_id: int, session_data: Dict[str, Any]) -> None:
+        """Complete a workout session and store the results"""
+        self.users.update_one(
+            {"_id": user_id},
+            {
+                "$push": {"workout_sessions": session_data},
+                "$set": {"current_workout": None}
+            }
+        ) 
