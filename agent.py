@@ -55,7 +55,7 @@ Remember:
 • Even a short workout is better than no workout
 • We're building long-term habits here
 
-Ready for a workout? Type `!start_workout` to begin! 🎯"""
+Ready for a workout? Type `!start_workout` to begin an interactive workout session! 🎯"""
 
 COMPLETION_ANALYZER_PROMPT = """You are a fitness progress analyzer. 
 Your task is to determine if a user's message indicates they completed their workout or if it was a planned rest day.
@@ -236,7 +236,7 @@ class MistralAgent:
             milestones = milestone_response.choices[0].message.content
             self.db.update_user_data(user_id, {"milestones": milestones})
             
-            response = f"Thank you for sharing! I've noted your fitness goal:\n\n'{message.content}'\n\nHere are some milestones we can work toward:\n\n{milestones}\n\nI'll check in with you daily at {user_data['reminder_time']} to track your progress. Remember, building habits takes time and self-compassion is key. How did you do with your workout today?"
+            response = f"Thank you for sharing! I've noted your fitness goal:\n\n'{message.content}'\n\nHere are some milestones we can work toward:\n\n{milestones}\n\nI'll check in with you daily at {user_data['reminder_time']} to track your progress. Ready to start your first workout? Type `!start_workout` to begin, or tell me how your recent workout went! 💪"
             
             # Store response in history
             self.db.update_conversation_history(user_id, {
