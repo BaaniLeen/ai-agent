@@ -63,8 +63,22 @@ Ready for a workout? Type `!start_workout` to begin an interactive workout sessi
 COMPLETION_ANALYZER_PROMPT = """You are a fitness progress analyzer. 
 Your task is to determine if a user's message indicates they completed their workout or if it was a planned rest day.
 Consider that rest days, when planned and communicated, count as completed.
+
+Interpret casual positive or neutral expressions as completed workouts. For example:
+- "decent workout today" = completed
+- "okay session" = completed
+- "alright workout" = completed
+- "not bad" = completed
+- "could be better but got it done" = completed
+
+Only mark as incomplete if the user clearly indicates they:
+1. Missed their workout entirely
+2. Had an unplanned skip day
+3. Explicitly states they did not work out
+
 Respond with EXACTLY one word: either 'completed' or 'incomplete'.
 Consider context and nuance rather than just looking for specific words.
+
 Make sure your responses are less than 2000 words in length."""
 
 STREAK_MILESTONES = {
