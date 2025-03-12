@@ -4,45 +4,121 @@ import discord
 from datetime import datetime, timedelta
 import logging
 from database import Database
+from typing import Dict, Any
+from zoneinfo import ZoneInfo
 
 MISTRAL_MODEL = "mistral-large-latest"
-SYSTEM_PROMPT = """You are a compassionate life coach. Help users build habits by:
-1. Setting clear milestones based on their goals
-2. Tracking daily progress and celebrating streaks
-3. Providing encouragement with self-compassion when they face challenges
-4. Celebrating their wins, no matter how small
-5. Helping users overcome obstacles by understanding their challenges
+SYSTEM_PROMPT = """You are a knowledgeable and motivating fitness coach. Help users achieve their gym goals by:
+1. Setting realistic fitness milestones based on their goals
+2. Tracking workout progress and celebrating consistency
+3. Providing form tips and exercise suggestions
+4. Celebrating fitness achievements, no matter how small
+5. Helping users overcome plateaus and challenges
+6. Ensuring safe progression and proper recovery
 Make sure your responses are less than 2000 words in length."""
 
 COMMANDS_HELP = """
 Here are all the available commands:
-• Just type a message normally to chat with me about your habit progress
-• `!streak` - Check your current streak and progress information
-• `!progress [days]` - View your progress log (default: last 7 days)
-• `!reminder HH:MM` - Change your daily reminder time (e.g., !reminder 09:00)
-• `!reset` - Reset your habit tracking and start fresh
+• Just type a message normally to chat with me about your workout progress
+• `!streak` - Check your current workout streak and progress
+• `!progress [days]` - View your workout log (default: last 7 days)
+• `!reminder HH:MM` - Change your daily check-in time (e.g., !reminder 20:00)
+• `!start_workout` - Start an interactive workout session
+• `!reset` - Reset your fitness tracking and start fresh
 • `!help` - Show this help message
 """
 
 # Update the ONBOARDING_PROMPT to include commands
-ONBOARDING_PROMPT = """Welcome! I'm your personal habit coach. What habit would you like to build? Please share your specific goals and what motivates you. Also, what time would you like me to check in with you daily? (e.g., '9:00 AM')
+ONBOARDING_PROMPT = """Welcome to your fitness journey! 🏋️‍♂️ I'm your AI gym coach.
+
+⚠️ **Important Disclaimer**:
+I am an AI assistant, not a certified fitness expert or medical professional. The workout suggestions and advice I provide are general in nature and may not be suitable for everyone. Please:
+• Consult with healthcare providers before starting any new exercise program
+• Listen to your body and don't push beyond your limits
+• Seek professional guidance for proper form and technique
+• Use this bot as a supplementary tool, not as a replacement for professional advice
+
+To get started, please tell me:
+
+1. Your main fitness goal (e.g., "increase bicep size", "lose 100 pounds from 300 pounds")
+2. Your current stats (weight, height, any relevant measurements)
+3. Your gym experience level (beginner/intermediate/advanced)
+4. Any injuries or limitations I should know about
+5. What time would you like me to check in with you daily? (e.g., '8:00 PM')
 
 """ + COMMANDS_HELP
 
-REMINDER_MESSAGE = "Hey! 👋 I noticed you haven't checked in about your habit today. How did it go with {habit_goal}? Remember, I'm here to support you, not judge. Even small progress is worth celebrating! 🌟"
+REMINDER_MESSAGE = """Hey fitness warrior! 💪 I noticed you haven't checked in about your workout today. How's your progress with {fitness_goal}? 
 
-COMPLETION_ANALYZER_PROMPT = """You are a habit completion analyzer. 
-Your task is to determine if a user's message indicates they completed their habit or not.
+Remember:
+• Rest days are important too! If today is a rest day, just let me know
+• Even a short workout is better than no workout
+• We're building long-term habits here
+
+Ready for a workout? Type `!start_workout` to begin! 🎯"""
+
+COMPLETION_ANALYZER_PROMPT = """You are a fitness progress analyzer. 
+Your task is to determine if a user's message indicates they completed their workout or if it was a planned rest day.
+Consider that rest days, when planned and communicated, count as completed.
 Respond with EXACTLY one word: either 'completed' or 'incomplete'.
 Consider context and nuance rather than just looking for specific words."""
 
 STREAK_MILESTONES = {
-    3: "🌱 3-day streak! You're building momentum!",
-    7: "🌟 One week streak! You're making this a part of your routine!",
-    14: "🔥 Two week streak! Your commitment is inspiring!",
-    21: "💫 21 days! You're well on your way to making this a lasting habit!",
-    30: "🏆 30-day streak! What an amazing achievement!",
+    3: "💪 3-day streak! Building that gym consistency!",
+    7: "🔥 One week strong! Your dedication is showing!",
+    14: "⚡ Two week warrior! You're making this a lifestyle!",
+    21: "💫 21 days! Your commitment to fitness is inspiring!",
+    30: "🏆 30-day champion! You're a true fitness warrior!",
+    60: "👑 60 days! You're transforming your life!",
+    90: "🌟 90-day legend! This is officially your lifestyle now!"
 }
+
+WORKOUT_GENERATOR_PROMPT = """You are an expert fitness trainer. Generate a 1-hour workout plan based on:
+1. User's goal: {goal}
+2. Experience level: {experience}
+3. Previous performance: {history}
+4. Any limitations: {limitations}
+
+Format the response as a JSON-like structure with exercises, sets, reps, and weights.
+Include a mix of:
+- 5-10 min warmup (dynamic stretches, light cardio)
+- 2-3 main compound exercises
+- 3-4 targeted exercises for their specific goals
+- 5 min cooldown
+Each exercise should include clear instructions and form cues.
+
+Example format:
+{
+    "warmup": "5 minutes light treadmill, arm circles, leg swings, etc.",
+    "exercises": [
+        {
+            "name": "Barbell Bench Press",
+            "sets": 3,
+            "reps": "8-10",
+            "weight": "135lb",
+            "form_cues": "Retract shoulder blades, feet planted, control the descent"
+        }
+    ],
+    "cooldown": "5 minutes stretching focusing on worked muscle groups"
+}"""
+
+EXERCISE_EVALUATION_PROMPT = """You are a fitness performance analyzer.
+Target: {target_performance}
+Actual: {actual_performance}
+Previous max: {previous_max}
+
+Evaluate if this performance indicates:
+1. Need to decrease weight/intensity (if below 70% completion or showing poor form)
+2. Good to maintain current level (if 70-90% completion with good form)
+3. Ready to increase weight/intensity (if >90% completion with good form)
+
+Consider:
+- Form and technique mentioned
+- Reported effort level
+- Comparison to previous performances
+- Safety first - when in doubt, maintain current level
+
+Respond with EXACTLY one word: 'decrease', 'maintain', or 'increase'"""
 
 # Setup logging
 logger = logging.getLogger("discord")
@@ -77,14 +153,18 @@ class MistralAgent:
         """Check if we should send a reminder to the user"""
         logger.info(f"Should send reminder?")
         user_data = self.db.get_user_data(user_id)
-        if not user_data or not user_data["onboarded"]:
+        if not user_data or not user_data["onboarded"] or not user_data["timezone"]:
             return False
         
         last_check_in = datetime.strptime(user_data["last_check_in"], "%Y-%m-%d")
         reminder_time = datetime.strptime(user_data["reminder_time"], "%H:%M").time()
-        current_time = datetime.now()
         
-        logger.info(f"last_check_in: {last_check_in}; reminder_time: {reminder_time}; current_time:{current_time}")
+        # Get current time in user's timezone
+        user_tz = ZoneInfo(user_data["timezone"])
+        current_time = datetime.now(user_tz)
+        
+        logger.info(f"last_check_in: {last_check_in}; reminder_time: {reminder_time}; current_time:{current_time} (timezone: {user_data['timezone']})")
+        
         # If it's past reminder time and user hasn't checked in today
         if (current_time.time() > reminder_time and 
             last_check_in.date() < current_time.date()):
@@ -95,8 +175,8 @@ class MistralAgent:
         """Send a reminder message to the user"""
         logger.info(f"Sending reminder for user: {user_id} to channel: {channel}")
         user_data = self.db.get_user_data(user_id)
-        habit_goal = user_data["habit_goal"]
-        reminder = REMINDER_MESSAGE.format(habit_goal=habit_goal)
+        fitness_goal = user_data["fitness_goal"]
+        reminder = REMINDER_MESSAGE.format(fitness_goal=fitness_goal)
         await channel.send(reminder)
 
     async def run(self, message: discord.Message):
@@ -137,12 +217,12 @@ class MistralAgent:
             
             # Update user data for onboarding
             self.db.update_user_data(user_id, {
-                "habit_goal": message.content,
+                "fitness_goal": message.content,
                 "onboarded": True
             })
             
             # Get milestones
-            milestone_prompt = f"Based on the user's habit goal: '{message.content}', suggest 3 achievable milestones. Format as a list."
+            milestone_prompt = f"Based on the user's fitness goal: '{message.content}', suggest 3 achievable milestones. Format as a list."
             messages = [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": milestone_prompt}
@@ -156,7 +236,7 @@ class MistralAgent:
             milestones = milestone_response.choices[0].message.content
             self.db.update_user_data(user_id, {"milestones": milestones})
             
-            response = f"Thank you for sharing! I've noted your habit goal:\n\n'{message.content}'\n\nHere are some milestones we can work toward:\n\n{milestones}\n\nI'll check in with you daily at {user_data['reminder_time']} to track your progress. Remember, building habits takes time and self-compassion is key. How did you do with your habit today?"
+            response = f"Thank you for sharing! I've noted your fitness goal:\n\n'{message.content}'\n\nHere are some milestones we can work toward:\n\n{milestones}\n\nI'll check in with you daily at {user_data['reminder_time']} to track your progress. Remember, building habits takes time and self-compassion is key. How did you do with your workout today?"
             
             # Store response in history
             self.db.update_conversation_history(user_id, {
@@ -172,7 +252,7 @@ class MistralAgent:
         user_data = self.db.get_user_data(user_id)  # Get fresh data
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "system", "content": f"User's habit goal: {user_data['habit_goal']}"},
+            {"role": "system", "content": f"User's fitness goal: {user_data['fitness_goal']}"},
             {"role": "system", "content": f"Milestones: {user_data['milestones']}"},
             {"role": "system", "content": f"Current streak: {user_data['current_streak']} days"},
             {"role": "system", "content": f"Longest streak: {user_data['longest_streak']} days"},
@@ -189,7 +269,7 @@ class MistralAgent:
         
         # Check for new day
         if user_data["last_check_in"] != current_date:
-            messages.append({"role": "system", "content": "This is a new day. Ask about progress on their habit and provide encouragement. If they completed their habit, celebrate. If not, show understanding and help identify obstacles."})
+            messages.append({"role": "system", "content": "This is a new day. Ask about progress on their workout and provide encouragement. If they completed their workout, celebrate. If not, show understanding and help identify obstacles."})
             self.db.update_user_data(user_id, {"last_check_in": current_date})
         
         response = await self.client.chat.complete_async(
@@ -202,7 +282,7 @@ class MistralAgent:
         # Use LLM to determine if the message indicates completion
         completion_check_messages = [
             {"role": "system", "content": COMPLETION_ANALYZER_PROMPT},
-            {"role": "system", "content": f"The user's habit goal is: {user_data['habit_goal']}"},
+            {"role": "system", "content": f"The user's fitness goal is: {user_data['fitness_goal']}"},
             {"role": "user", "content": message.content}
         ]
         
@@ -240,7 +320,7 @@ class MistralAgent:
         # First check if user exists in database
         user_data = self.db.get_user_data(user_id)
         if not user_data:
-            return "You don't have any habit tracking data to reset!"
+            return "You don't have any fitness tracking data to reset!"
         
         # Delete user's data from database
         self.db.delete_user(user_id)
@@ -253,5 +333,125 @@ class MistralAgent:
             "date": datetime.now().strftime("%Y-%m-%d")
         })
         
-        return "✨ Your habit tracking data has been reset! Let's start fresh.\n\n" + ONBOARDING_PROMPT
+        return "✨ Your fitness tracking data has been reset! Let's start fresh.\n\n" + ONBOARDING_PROMPT
+
+    async def generate_workout(self, user_id: int) -> Dict[str, Any]:
+        """Generate a personalized workout plan"""
+        user_data = self.db.get_user_data(user_id)
+        
+        # Get exercise history for progressive overload
+        exercise_history = user_data.get("exercise_history", {})
+        
+        messages = [
+            {"role": "system", "content": WORKOUT_GENERATOR_PROMPT.format(
+                goal=user_data["fitness_goal"],
+                experience=user_data["experience_level"],
+                history=str(exercise_history),
+                limitations=user_data["limitations"]
+            )}
+        ]
+        
+        response = await self.client.chat.complete_async(
+            model=MISTRAL_MODEL,
+            messages=messages,
+        )
+        
+        # Parse the response as JSON
+        import json
+        try:
+            # Clean up the response to ensure it's valid JSON
+            response_text = response.choices[0].message.content
+            logger.info(f"Response text: {response_text}")
+            # Remove any markdown code block markers if present
+            response_text = response_text.replace('```json', '').replace('```', '').strip()
+            workout_plan = json.loads(response_text)
+            
+            # Ensure the workout plan has the required fields
+            if not isinstance(workout_plan, dict):
+                raise ValueError("Workout plan must be a dictionary")
+            if "exercises" not in workout_plan:
+                workout_plan["exercises"] = []
+            if "warmup" not in workout_plan:
+                workout_plan["warmup"] = "5 minutes light cardio and dynamic stretching"
+            if "cooldown" not in workout_plan:
+                workout_plan["cooldown"] = "5 minutes stretching"
+                
+            self.db.start_workout_session(user_id, workout_plan)
+            logger.info(f"Workout plan: {workout_plan}")
+            return workout_plan
+            
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse workout plan: {e}")
+            # Return a basic workout plan as fallback
+            fallback_plan = {
+                "warmup": "5 minutes light cardio and dynamic stretching",
+                "exercises": [
+                    {
+                        "name": "Bodyweight Squats",
+                        "sets": 3,
+                        "reps": "10",
+                        "weight": "bodyweight",
+                        "form_cues": "Keep chest up, knees tracking over toes"
+                    },
+                    {
+                        "name": "Push-ups",
+                        "sets": 3,
+                        "reps": "10",
+                        "weight": "bodyweight",
+                        "form_cues": "Keep core tight, elbows at 45 degrees"
+                    }
+                ],
+                "cooldown": "5 minutes stretching"
+            }
+            self.db.start_workout_session(user_id, fallback_plan)
+            return fallback_plan
+
+    async def evaluate_exercise_performance(
+        self, user_id: int, planned_exercise: Dict[str, Any], actual_performance: str
+    ) -> str:
+        """Evaluate exercise performance and determine progression"""
+        user_data = self.db.get_user_data(user_id)
+        exercise_name = planned_exercise["name"]
+        
+        # Get previous performance
+        exercise_history = user_data.get("exercise_history", {}).get(exercise_name, [])
+        previous_max = max([ex.get("weight", 0) for ex in exercise_history]) if exercise_history else 0
+        
+        messages = [
+            {"role": "system", "content": EXERCISE_EVALUATION_PROMPT.format(
+                target_performance=f"{planned_exercise['sets']}x{planned_exercise['reps']} @{planned_exercise['weight']}",
+                actual_performance=actual_performance,
+                previous_max=previous_max
+            )}
+        ]
+        
+        response = await self.client.chat.complete_async(
+            model=MISTRAL_MODEL,
+            messages=messages,
+        )
+        
+        evaluation = response.choices[0].message.content.strip().lower()
+        
+        # Update exercise history
+        self.db.update_exercise_history(user_id, exercise_name, {
+            "planned": planned_exercise,
+            "actual": actual_performance,
+            "evaluation": evaluation
+        })
+        
+        return evaluation
+
+    async def generate_workout_summary(self, session_results: Dict[str, Any]) -> str:
+        """Generate a summary of the workout session"""
+        messages = [
+            {"role": "system", "content": "You are a supportive fitness coach. Create an encouraging summary of the workout session, highlighting achievements and areas for improvement."},
+            {"role": "user", "content": str(session_results)}
+        ]
+        
+        response = await self.client.chat.complete_async(
+            model=MISTRAL_MODEL,
+            messages=messages,
+        )
+        
+        return response.choices[0].message.content
 
