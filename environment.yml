@@ -1,0 +1,12 @@
+name: cs153-project
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.9
+  - pip
+  - pip:
+      - discord
+      - mistralai
+      - discord.py
+      - python-dotenv

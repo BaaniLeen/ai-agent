@@ -7,6 +7,7 @@ from datetime import datetime
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 from agent import MistralAgent
+from database import Database
 
 PREFIX = "!"
 
@@ -29,6 +30,87 @@ agent = MistralAgent()
 # Get the token from the environment variables
 token = os.getenv("DISCORD_TOKEN")
 
+# Add this class at the top level, before the commands
+class HabitTracking(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+        self.agent = agent  # Use the global agent instance
+
+    @commands.command(name="streak", help="Check your current streak and progress", brief="Check your streak")
+    async def streak(self, ctx):
+        """Show the user's current streak and progress information."""
+        user_id = ctx.author.id
+        user_data = self.agent.db.get_user_data(user_id)
+        
+        if not user_data or not user_data["onboarded"]:
+            await ctx.send("You haven't set up your habit tracking yet! Send me a message to get started.")
+            return
+
+        response = (
+            f"🎯 **Your Habit Goal**: {user_data['habit_goal']}\n\n"
+            f"📊 **Current Streak**: {user_data['current_streak']} days\n"
+            f"🏆 **Longest Streak**: {user_data['longest_streak']} days\n\n"
+            f"🎯 **Your Milestones**:\n{user_data['milestones']}\n\n"
+            f"⏰ **Daily Check-in Time**: {user_data['reminder_time']}"
+        )
+        await ctx.send(response)
+
+    @commands.command(name="reminder", help="Change your daily reminder time (format: HH:MM)", brief="Set daily reminder time")
+    async def set_reminder(self, ctx, new_time: str):
+        """Update the user's daily reminder time."""
+        user_id = ctx.author.id
+        user_data = self.agent.db.get_user_data(user_id)
+        
+        if not user_data or not user_data["onboarded"]:
+            await ctx.send("You haven't set up your habit tracking yet! Send me a message to get started.")
+            return
+
+        try:
+            # Validate time format
+            datetime.strptime(new_time, "%H:%M")
+            self.agent.db.update_user_data(user_id, {"reminder_time": new_time})
+            await ctx.send(f"✅ Your daily reminder time has been updated to {new_time}!")
+        except ValueError:
+            await ctx.send("❌ Please use the format HH:MM (e.g., 09:00 or 14:30)")
+
+    @commands.command(name="progress", help="View your progress log (default: last 7 days)", brief="View progress log")
+    async def progress(self, ctx, days: int = 7):
+        """Show the user's progress log for the specified number of days."""
+        user_id = ctx.author.id
+        user_data = self.agent.db.get_user_data(user_id)
+        
+        if not user_data or not user_data["onboarded"]:
+            await ctx.send("You haven't set up your habit tracking yet! Send me a message to get started.")
+            return
+
+        progress_log = user_data["progress_log"]
+        if not progress_log:
+            await ctx.send("No progress data available yet. Keep working on your habit!")
+            return
+
+        # Sort dates and get the most recent ones
+        dates = sorted(progress_log.keys(), reverse=True)[:days]
+        
+        response = f"📊 **Progress Log** (Last {len(dates)} days)\n\n"
+        for date in dates:
+            entry = progress_log[date]
+            status = "✅" if entry["completed"] else "❌"
+            response += f"{date}: {status} - {entry['message'][:50]}...\n"
+
+        await ctx.send(response)
+
+    @commands.command(name="reset", help="Reset your habit tracking and start over", brief="Reset habit tracking")
+    async def reset(self, ctx):
+        """Reset user's data and restart onboarding process."""
+        user_id = ctx.author.id
+        
+        try:
+            response = await self.agent.reset_user(user_id)
+            await ctx.send(response)
+        except Exception as e:
+            logger.error(f"Failed to reset user {user_id}: {e}")
+            await ctx.send("❌ Something went wrong while trying to reset your data. Please try again later.")
+
 
 @bot.event
 async def on_ready():
@@ -39,20 +121,34 @@ async def on_ready():
     https://discordpy.readthedocs.io/en/latest/api.html#discord.on_ready
     """
     logger.info(f"{bot.user} has connected to Discord!")
+     # If the task is running due to a previous session, stop it first
+    if check_reminders.is_running():
+        check_reminders.cancel()
     check_reminders.start()
 
 
 @tasks.loop(minutes=5)  # Check every 5 minutes
 async def check_reminders():
     """Check if any users need reminders and send them."""
-    for user_id in agent.user_data:
-        if agent.should_send_reminder(user_id):
-            try:
+    all_users = list(agent.db.get_all_users())  # Convert cursor to list
+    logger.info(f"Checking reminders for {len(all_users)} users...")
+    
+    # Log summary of each user's state
+    for user_data in all_users:
+        logger.info(f"User {user_data['_id']}: "
+                   f"habit='{user_data.get('habit_goal', 'Not set')}', "
+                   f"reminder_time={user_data.get('reminder_time', 'Not set')}, "
+                   f"last_check_in={user_data.get('last_check_in', 'Never')}, "
+                   f"streak={user_data.get('current_streak', 0)}")
+        
+        user_id = user_data["_id"]
+        try:
+            if agent.should_send_reminder(user_id):
                 user = await bot.fetch_user(user_id)
                 if user:
                     await agent.send_reminder(user_id, user)
-            except Exception as e:
-                logger.error(f"Failed to send reminder to user {user_id}: {e}")
+        except Exception as e:
+            logger.error(f"Failed to process reminder for user {user_id}: {e}")
 
 
 @bot.event
@@ -92,74 +188,14 @@ async def on_message(message: discord.Message):
 # This example command is here to show you how to add commands to the bot.
 # Run !ping with any number of arguments to see the command in action.
 # Feel free to delete this if your project will not need commands.
-@bot.command(name="ping", help="Pings the bot.")
-async def ping(ctx, *, arg=None):
-    if arg is None:
-        await ctx.send("Pong!")
-    else:
-        await ctx.send(f"Pong! Your argument was {arg}")
 
 
-@bot.command(name="streak", help="Check your current streak and progress")
-async def streak(ctx):
-    """Show the user's current streak and progress information."""
-    user_id = ctx.author.id
-    if user_id not in agent.user_data or not agent.user_data[user_id]["onboarded"]:
-        await ctx.send("You haven't set up your habit tracking yet! Send me a message to get started.")
-        return
+# Add this right before bot.run(token)
+async def setup():
+    await bot.add_cog(HabitTracking(bot))
 
-    user_data = agent.user_data[user_id]
-    response = (
-        f"🎯 **Your Habit Goal**: {user_data['habit_goal']}\n\n"
-        f"📊 **Current Streak**: {user_data['current_streak']} days\n"
-        f"🏆 **Longest Streak**: {user_data['longest_streak']} days\n\n"
-        f"🎯 **Your Milestones**:\n{user_data['milestones']}\n\n"
-        f"⏰ **Daily Check-in Time**: {user_data['reminder_time']}"
-    )
-    await ctx.send(response)
-
-
-@bot.command(name="reminder", help="Change your daily reminder time (format: HH:MM)")
-async def set_reminder(ctx, new_time: str):
-    """Update the user's daily reminder time."""
-    user_id = ctx.author.id
-    if user_id not in agent.user_data or not agent.user_data[user_id]["onboarded"]:
-        await ctx.send("You haven't set up your habit tracking yet! Send me a message to get started.")
-        return
-
-    try:
-        # Validate time format
-        datetime.strptime(new_time, "%H:%M")
-        agent.user_data[user_id]["reminder_time"] = new_time
-        await ctx.send(f"✅ Your daily reminder time has been updated to {new_time}!")
-    except ValueError:
-        await ctx.send("❌ Please use the format HH:MM (e.g., 09:00 or 14:30)")
-
-
-@bot.command(name="progress", help="View your progress log")
-async def progress(ctx, days: int = 7):
-    """Show the user's progress log for the specified number of days."""
-    user_id = ctx.author.id
-    if user_id not in agent.user_data or not agent.user_data[user_id]["onboarded"]:
-        await ctx.send("You haven't set up your habit tracking yet! Send me a message to get started.")
-        return
-
-    progress_log = agent.user_data[user_id]["progress_log"]
-    if not progress_log:
-        await ctx.send("No progress data available yet. Keep working on your habit!")
-        return
-
-    # Sort dates and get the most recent ones
-    dates = sorted(progress_log.keys(), reverse=True)[:days]
-    
-    response = f"📊 **Progress Log** (Last {len(dates)} days)\n\n"
-    for date in dates:
-        entry = progress_log[date]
-        status = "✅" if entry["completed"] else "❌"
-        response += f"{date}: {status} - {entry['message'][:50]}...\n"
-
-    await ctx.send(response)
-
+# Modify the bot.run line to setup the cog
+bot.setup_hook = setup
 
 print(f"Token: {token}...")  # Print only the first few characters for debugging
 # Start the bot, connecting it to the gateway
