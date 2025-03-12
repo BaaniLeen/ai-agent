@@ -338,30 +338,61 @@ class MistralAgent:
     async def generate_workout(self, user_id: int) -> Dict[str, Any]:
         """Generate a personalized workout plan"""
         user_data = self.db.get_user_data(user_id)
-        
+        logger.info(f"User data: {user_data}")
+
         # Get exercise history for progressive overload
         exercise_history = user_data.get("exercise_history", {})
+        goal = user_data.get("fitness_goal", "Not specified")
+        experience_level = user_data.get("experience_level", "Not specified")
+        limitations = user_data.get("limitations", "Not specified")
+
+        example_format = {
+            "warmup": "5 minutes light treadmill, arm circles, leg swings, etc.",
+            "exercises": [
+                {
+                    "name": "Barbell Bench Press",
+                    "sets": 3,
+                    "reps": "8-10",
+                    "weight": "135lb",
+                    "form_cues": "Retract shoulder blades, feet planted, control the descent"
+                }
+            ],
+            "cooldown": "5 minutes stretching focusing on worked muscle groups"
+        }
+
+        workout_generator_prompt = f"""You are an expert fitness trainer. Generate a 1-hour workout plan based on:
+1. User's goal: {str(goal)}
+2. Experience level: {str(experience_level)}
+3. Previous performance: {str(exercise_history)}
+4. Any limitations: {str(limitations)}
+
+Format the response as a JSON-like structure with exercises, sets, reps, and weights.
+Include a mix of:
+- 5-10 min warmup (dynamic stretches, light cardio)
+- 2-3 main compound exercises
+- 3-4 targeted exercises for their specific goals
+- 5 min cooldown
+Each exercise should include clear instructions and form cues.
+
+Example format:
+{str(example_format)}"""
+
         
         messages = [
-            {"role": "system", "content": WORKOUT_GENERATOR_PROMPT.format(
-                goal=user_data["fitness_goal"],
-                experience=user_data["experience_level"],
-                history=str(exercise_history),
-                limitations=user_data["limitations"]
-            )}
+            {"role": "system", "content": workout_generator_prompt}
         ]
-        
+
         response = await self.client.chat.complete_async(
             model=MISTRAL_MODEL,
             messages=messages,
         )
+        logger.info(f"workout_response: {response}")
         
         # Parse the response as JSON
         import json
         try:
             # Clean up the response to ensure it's valid JSON
             response_text = response.choices[0].message.content
-            logger.info(f"Response text: {response_text}")
             # Remove any markdown code block markers if present
             response_text = response_text.replace('```json', '').replace('```', '').strip()
             workout_plan = json.loads(response_text)
@@ -375,7 +406,8 @@ class MistralAgent:
                 workout_plan["warmup"] = "5 minutes light cardio and dynamic stretching"
             if "cooldown" not in workout_plan:
                 workout_plan["cooldown"] = "5 minutes stretching"
-                
+            
+            logger.info(f"Starting workout session")
             self.db.start_workout_session(user_id, workout_plan)
             logger.info(f"Workout plan: {workout_plan}")
             return workout_plan

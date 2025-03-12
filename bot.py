@@ -55,8 +55,10 @@ class FitnessTracking(commands.Cog):
             
             if not workout_plan or "exercises" not in workout_plan:
                 raise ValueError("Invalid workout plan generated")
-                
+
+            logger.info(f"workout_plan: {workout_plan}")    
             plan_display = self.format_workout_plan(workout_plan)
+            logger.info(f"plan_display: {plan_display}") 
             await ctx.send(f"Here's your workout plan for today:\n\n{plan_display}\n\nReady to start? Type `yes` to begin!")
             
             def check(m):
