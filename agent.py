@@ -47,6 +47,7 @@ To get started, please tell me:
 3. Your gym experience level (beginner/intermediate/advanced)
 4. Any injuries or limitations I should know about
 5. What time would you like me to check in with you daily? (e.g., '8:00 PM')
+6. What timezone are you in? (e.g., 'PST', 'EST', or full names like 'America/New_York')
 
 """ + COMMANDS_HELP
 
@@ -216,15 +217,45 @@ class MistralAgent:
         
         # Handle onboarding response
         if not user_data["onboarded"]:
-            # Extract reminder time from the message if provided
-            message_lower = message.content.lower()
-            if "am" in message_lower or "pm" in message_lower:
-                try:
-                    time_str = message_lower.split("at ")[-1].split(" ")[0]
-                    reminder_time = datetime.strptime(time_str, "%H:%M").strftime("%H:%M")
-                    self.db.update_user_data(user_id, {"reminder_time": reminder_time})
-                except:
-                    pass
+            # Extract time and timezone from the message
+            time_zone_extraction_prompt = """You are a time and timezone parser. Extract both the time and timezone from this message.
+For time: Convert to 24-hour format (HH:MM). If no time found, use "20:00".
+For timezone: Look for common abbreviations (PST, EST, etc.) or full names. If no timezone found, use "America/Los_Angeles".
+Respond in exactly this format:
+TIME|TIMEZONE
+Examples:
+"I want to work out at 8:30 AM EST" -> "08:30|America/New_York"
+"9pm works for me, I'm in Pacific time" -> "21:00|America/Los_Angeles"
+"8 in the morning, CST" -> "08:00|America/Chicago"
+"""
+            messages = [
+                {"role": "system", "content": time_zone_extraction_prompt},
+                {"role": "user", "content": message.content}
+            ]
+            
+            extraction_response = await self.client.chat.complete_async(
+                model=MISTRAL_MODEL,
+                messages=messages,
+            )
+            
+            try:
+                time_str, timezone_str = extraction_response.choices[0].message.content.strip().split('|')
+                # Validate the time format
+                datetime.strptime(time_str, "%H:%M")
+                # Validate timezone
+                ZoneInfo(timezone_str)
+                
+                self.db.update_user_data(user_id, {
+                    "reminder_time": time_str,
+                    "timezone": timezone_str
+                })
+                logger.info(f"Set reminder time to {time_str} and timezone to {timezone_str}")
+            except Exception as e:
+                logger.error(f"Invalid format from LLM: {extraction_response.choices[0].message.content}, using defaults")
+                self.db.update_user_data(user_id, {
+                    "reminder_time": "20:00",
+                    "timezone": "America/Los_Angeles"
+                })
             
             # Update user data for onboarding
             self.db.update_user_data(user_id, {
@@ -247,7 +278,13 @@ class MistralAgent:
             milestones = milestone_response.choices[0].message.content
             self.db.update_user_data(user_id, {"milestones": milestones})
             
-            response = f"Thank you for sharing! I've noted your fitness goal:\n\n'{message.content}'\n\nHere are some milestones we can work toward:\n\n{milestones}\n\nI'll check in with you daily at {user_data['reminder_time']} to track your progress. Ready to start your first workout? Type `!start_workout` to begin, or tell me how your recent workout went! 💪"
+            # Get fresh user data to ensure we have the latest reminder time
+            fresh_user_data = self.db.get_user_data(user_id)
+            
+            # Format time for display (convert to 12-hour format)
+            display_time = datetime.strptime(fresh_user_data['reminder_time'], "%H:%M").strftime("%I:%M %p")
+            
+            response = f"Thank you for sharing! I've noted your fitness goal:\n\n'{message.content}'\n\nHere are some milestones we can work toward:\n\n{milestones}\n\nI'll check in with you daily at {display_time} to track your progress. Ready to start your first workout? Type `!start_workout` to begin, or tell me how your recent workout went! 💪"
             
             # Store response in history
             self.db.update_conversation_history(user_id, {
